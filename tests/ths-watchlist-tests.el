@@ -1,0 +1,92 @@
+;;; ths-watchlist-tests.el --- Watchlist regressions -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'ths)
+
+(ert-deftest ths-watchlist-normalizes-stock-input-and-rejects-invalid-input ()
+  (dolist (pair '(("600519" . "sh600519") ("000001" . "sz000001")
+                  ("300033" . "sz300033") ("920001" . "bj920001")
+                  ("  SZ000001 " . "sz000001")))
+    (should (equal (cdr pair) (ths-watchlist-symbol (car pair)))))
+  (dolist (input '("" "123" "600519,000001" "贵州茅台" "sh000001" "sz399001" "xx300033"))
+    (should-error (ths-watchlist-symbol input) :type 'user-error)))
+
+(ert-deftest ths-watchlist-add-button-opens-new-stock-and-does-not-duplicate ()
+  (ths-test-with-dashboard
+    (ths--set ths--state :query "不存在")
+    (let ((ths-auto-fetch t) calls)
+      (cl-letf (((symbol-function 'ths-data-fetch)
+                 (lambda (symbol kind _cb) (push (cons symbol kind) calls) #'ignore))
+                ((symbol-function 'ths-search-read)
+                 (lambda (&rest _) '(:symbol "sz000001" :name "平安银行"))))
+        (ths-test-press 'favorite-add)
+        (ths-add-favorite "sz000001"))
+      (should (member '("sz000001" . quote) calls))
+      (should (member '("sz000001" . intraday) calls))
+      (should (member '("sz000001" . trades) calls)))
+    (let ((state (etaf-value ths--state)))
+      (should (equal "000001" (plist-get state :selected)))
+      (should (eq 'favorites (plist-get state :tab)))
+      (should (equal "" (plist-get state :query)))
+      (should (= 1 (cl-count "000001" (plist-get state :favorites) :test #'equal)))
+      (should (= 9 (length ths-data-stocks))))
+    (should (equal "平安银行" (plist-get (ths-data-find "000001") :name)))
+    (should (eq #'ths-add-favorite (key-binding (kbd "a"))))
+    (should (eq #'ths-remove-favorite (key-binding (kbd "d"))))
+    (ths-test-press 'favorite-remove)
+    (should-not (member "000001" (plist-get (etaf-value ths--state) :favorites)))
+    (should (ths-data-find "000001"))))
+
+(ert-deftest ths-watchlist-invalid-add-and-save-failure-preserve-state ()
+  (ths-test-with-dashboard
+    (let ((before (copy-tree (etaf-value ths--state))) (stocks (copy-tree ths-data-stocks)))
+      (should-error (ths-add-favorite "bad") :type 'user-error)
+      (cl-letf (((symbol-function 'ths-watchlist-save) (lambda (_) (user-error "disk full"))))
+        (should-error (ths-add-favorite "000001") :type 'user-error)
+        (should-error (ths-remove-favorite) :type 'user-error)
+        (should-error (ths-toggle-favorite) :type 'user-error))
+      (should (equal before (etaf-value ths--state)))
+      (should (equal stocks ths-data-stocks)))))
+
+(ert-deftest ths-watchlist-restores-added-symbols-and-persists-empty-list ()
+  (let* ((directory (make-temp-file "ths-watchlist-test-" t))
+         (ths-watchlist-file (expand-file-name "nested/watchlist.json" directory))
+         (ths-auto-fetch nil) (ths-buffer-name " *ths-watchlist-persist*") buffer)
+    (unwind-protect
+        (progn
+          (setq buffer (ths))
+          (with-current-buffer buffer (ths-add-favorite "000001"))
+          (kill-buffer buffer)
+          (setq buffer (ths))
+          (with-current-buffer buffer
+            (should (equal "sz000001" (plist-get (ths-data-find "000001") :symbol)))
+            (should (member "000001" (plist-get (etaf-value ths--state) :favorites)))
+            (ths--section 'list)
+            (ths-test-press 'favorites)
+            (while (plist-get (etaf-value ths--state) :favorites) (ths-remove-favorite))
+            (should-not (plist-get (etaf-value ths--state) :selected))
+            (should (ths-test-visible "暂无自选")))
+          (kill-buffer buffer)
+          (setq buffer (ths))
+          (with-current-buffer buffer
+            (should-not (plist-get (etaf-value ths--state) :favorites))
+            (ths-toggle-favorite)
+            (should (= 1 (length (ths-watchlist-load))))))
+      (when (buffer-live-p buffer) (kill-buffer buffer))
+      (delete-directory directory t))))
+
+(ert-deftest ths-watchlist-bad-file-is-not-overwritten-or-evaluated ()
+  (let* ((directory (make-temp-file "ths-watchlist-test-" t))
+         (ths-watchlist-file (expand-file-name "watchlist.json" directory)))
+    (unwind-protect
+        (progn
+          (with-temp-file ths-watchlist-file (insert "(error \"must not evaluate\")"))
+          (should-error (ths-watchlist-load) :type 'user-error)
+          (with-temp-buffer
+            (insert-file-contents ths-watchlist-file)
+            (should (equal (buffer-string) "(error \"must not evaluate\")")))
+          (let ((ths-watchlist-file directory))
+            (should-error (ths-watchlist-save '("sz000001")) :type 'user-error))
+          (should-not (directory-files directory nil "\\`\\.ths-watchlist-")))
+      (delete-directory directory t))))
+
+;;; ths-watchlist-tests.el ends here
