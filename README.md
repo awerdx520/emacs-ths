@@ -16,33 +16,9 @@
 
 以下配置使用 Emacs 30.1+ 内置 `use-package` 的 `:vc` 功能。需要安装 Git 和 curl，并确保 Emacs 能访问 GitHub 及行情服务。
 
-将配置加入初始化文件，按顺序安装依赖和 THS：
+请先安装 [ETAF](https://github.com/emacs-taf/etaf) 0.2.1+ 及其依赖，然后将以下 THS 配置加入初始化文件：
 
 ```elisp
-(use-package ecss
-  :ensure nil
-  :vc (:url "https://github.com/emacs-taf/ecss.git"
-       :lisp-dir "."
-       :main-file "ecss.el"
-       :rev :newest)
-  :defer t)
-
-(use-package ebox
-  :ensure nil
-  :vc (:url "https://github.com/emacs-taf/ebox.git"
-       :lisp-dir "."
-       :main-file "ebox.el"
-       :rev :newest)
-  :defer t)
-
-(use-package etaf
-  :ensure nil
-  :vc (:url "https://github.com/emacs-taf/etaf.git"
-       :lisp-dir "."
-       :main-file "etaf.el"
-       :rev :newest)
-  :defer t)
-
 (use-package ths
   :ensure nil
   :vc (:url "https://github.com/guidao/emacs-ths.git"
@@ -55,7 +31,7 @@
         ths-data-ranking-providers '(eastmoney sina)))
 ```
 
-已安装 ECSS、Ebox、ETAF 的用户可以只保留 THS 配置。依赖版本要求为 ECSS 0.1.0+、Ebox 3.0.0+、ETAF 0.2.1+；THS 本身要求 Emacs 29.1+，上面的安装方式要求支持 `:vc` 的 `use-package`。
+THS 本身要求 Emacs 29.1+，上面的安装方式要求支持 `:vc` 的 `use-package`。
 
 执行 `M-x ths` 打开界面，行情会在后台加载。使用 `M-x package-vc-upgrade-all` 更新通过 VC 安装的包，更新后重启 Emacs。
 
@@ -145,29 +121,9 @@
 
 接口字段参考 [AKShare](https://github.com/akfamily/akshare) 和 [efinance](https://github.com/Micro-sheep/efinance) 的公开实现。
 
-## 常见问题
-
-**行情为空或连接失败**
-
-先按 `r` 重试。排行榜可将 `ths-data-ranking-providers` 改为 `(sina eastmoney)`，个股报价则调整 `ths-data-providers`。页面会显示请求失败信息。
-
-网络请求使用后台 curl，代理读取 Emacs 进程环境中的 `https_proxy` / `HTTPS_PROXY` 等变量，不使用 `url-proxy-services` 或 `.curlrc`。如果配置了代理，确认代理进程正在运行。
-
-**分时图显示为字符**
-
-终端或不支持 SVG 的 Emacs 会使用字符图。可用 `M-:` 检查：
-
-```elisp
-(list (display-graphic-p) (image-type-available-p 'svg))
-```
-
-**布局没有随窗口变化**
-
-按 `g` 重新适配，或调整窗口大小、文字缩放。要同时查看列表、图表和盘口，需要至少 136 列。
-
 ## 开发
 
-先按上面的 `use-package :vc` 配置安装 ECSS、Ebox 和 ETAF，再检出 THS 源码：
+确认 ETAF 及其依赖已安装，再检出 THS 源码：
 
 ```sh
 git clone https://github.com/guidao/emacs-ths.git
