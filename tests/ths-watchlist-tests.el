@@ -18,7 +18,7 @@
                  (lambda (symbol kind _cb) (push (cons symbol kind) calls) #'ignore))
                 ((symbol-function 'ths-search-read)
                  (lambda (&rest _) '(:symbol "sz000001" :name "平安银行"))))
-        (ths-test-press 'favorite-add)
+        (ths-test-press 'shortcut-a)
         (ths-add-favorite "sz000001"))
       (should (member '("sz000001" . quote) calls))
       (should (member '("sz000001" . intraday) calls))
@@ -32,7 +32,7 @@
     (should (equal "平安银行" (plist-get (ths-data-find "000001") :name)))
     (should (eq #'ths-add-favorite (key-binding (kbd "a"))))
     (should (eq #'ths-remove-favorite (key-binding (kbd "d"))))
-    (ths-test-press 'favorite-remove)
+    (ths-test-press 'shortcut-d)
     (should-not (member "000001" (plist-get (etaf-value ths--state) :favorites)))
     (should (ths-data-find "000001"))))
 

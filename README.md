@@ -2,6 +2,8 @@
 
 在 Emacs 中查看 A 股行情、自选股和全市场排行榜。基于 [ETAF](https://github.com/emacs-taf/etaf) 构建，支持鼠标操作和快捷键。
 
+![THS 行情界面：股票列表、分时与成交量图、五档盘口及成交记录](preview/demo.png)
+
 - 个股报价、三大指数与五档买卖盘。
 - 分时图、日 K 和成交量副图；图形界面使用 SVG，终端使用字符图。
 - 按名称或代码搜索股票，添加、删除并保存自选。
@@ -20,24 +22,31 @@
 (use-package ecss
   :ensure nil
   :vc (:url "https://github.com/emacs-taf/ecss.git"
+       :lisp-dir "."
+       :main-file "ecss.el"
        :rev :newest)
   :defer t)
 
 (use-package ebox
   :ensure nil
   :vc (:url "https://github.com/emacs-taf/ebox.git"
+       :lisp-dir "."
+       :main-file "ebox.el"
        :rev :newest)
   :defer t)
 
 (use-package etaf
   :ensure nil
   :vc (:url "https://github.com/emacs-taf/etaf.git"
+       :lisp-dir "."
+       :main-file "etaf.el"
        :rev :newest)
   :defer t)
 
 (use-package ths
   :ensure nil
   :vc (:url "https://github.com/guidao/emacs-ths.git"
+       :lisp-dir "."
        :main-file "ths.el"
        :rev :newest)
   :commands ths

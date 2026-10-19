@@ -588,7 +588,7 @@ NAME is optional display metadata selected from stock search suggestions."
          (page (/ index capacity))
          (row-height (if ths--roomy 2 1))
          (visible (seq-subseq stocks (* page capacity) (min (length stocks) (* (1+ page) capacity))))
-         (free (- ths--panel-rows (ths--panel-overhead) 4 (* row-height (length visible))
+         (free (- ths--panel-rows (ths--panel-overhead) 3 (* row-height (length visible))
                   (if stocks 0 1))))
     (ths--panel
      (format "行情列表  /  %d 支" (length (ths--stocks state)))
@@ -601,9 +601,6 @@ NAME is optional display metadata selected from stock search suggestions."
                                      (eq (plist-get state :tab) 'favorites))
 			(ths--button 'sort "涨幅 ↓" (lambda () (ths--set ref :sorted (not (plist-get (etaf-value ref) :sorted))))
                                      (plist-get state :sorted))))
-       (etaf-node 'row '(:item-gap (ch 1))
-                  (list (ths--button 'favorite-add "添加自选 a" (lambda () (call-interactively #'ths-add-favorite)))
-			(ths--button 'favorite-remove "删除自选 d" #'ths-remove-favorite)))
        (ths--text "  代码    名称        最新     涨跌幅" "#63738d"))
       (mapcar
        (lambda (stock)
@@ -833,7 +830,7 @@ NAME is optional display metadata selected from stock search suggestions."
          (wide (>= columns 136))
          (section (or (plist-get state :section) 'detail)))
     (setq ths--stock-page-size
-          (max 1 (/ (- ths--panel-rows (ths--panel-overhead) 4) (if ths--roomy 2 1))))
+          (max 1 (/ (- ths--panel-rows (ths--panel-overhead) 3) (if ths--roomy 2 1))))
     (cond
      ((or (< columns 44) (< rows 20))
       (etaf-node 'column (list :height (list 'lh height) :overflow 'hidden)
