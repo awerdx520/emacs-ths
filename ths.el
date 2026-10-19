@@ -851,12 +851,18 @@ NAME is optional display metadata selected from stock search suggestions."
                            (ths--button 'page-ranking "排行榜 3" #'ths-show-ranking)
                            (ths--button 'clear-search "清空" (lambda () (ths--set ref :query "")))))
           (ths--shortcut-hint columns)
-          (ths--text
-           (mapconcat (lambda (stock)
-                        (format "%s %s %s" (plist-get stock :name)
-                                (ths--number (plist-get stock :price))
-                                (ths--number (ths-data-change stock) "%+.2f%%")))
-                      ths-data-indices "   ") "#91a4c1")))
+          (etaf-node
+           'row '(:height (lh 1) :overflow hidden :item-gap (ch 3))
+           (mapcar
+            (lambda (stock)
+              (let ((change (ths-data-change stock)))
+                (etaf-node
+                 'row '(:height (lh 1) :item-gap (ch 1))
+                 (list (ths--text (plist-get stock :name) "#91a4c1")
+                       (ths--text (format "%s %s" (ths--number (plist-get stock :price))
+                                          (ths--number change "%+.2f%%"))
+                                  (ths--color change))))))
+            ths-data-indices))))
         (etaf-node
          'row (list :ref 'dashboard-body :height (list 'lh ths--panel-rows) :item-gap '(ch 1))
          (if wide
