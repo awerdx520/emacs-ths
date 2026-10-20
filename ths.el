@@ -753,7 +753,6 @@ NAME is optional display metadata selected from stock search suggestions."
                             :padding (list (list 'lh (if ths--roomy 1 0)) '(ch 0))
                             :on-press (lambda () (ths--set ref :selected code) (ths--set ref :section 'detail))
                             :bgcolor (if selected (ths-theme-color 'selected) (ths-theme-color 'panel))
-                            :hover-style (list :background-color (ths-theme-color 'row-hover))
                             :help-echo (concat "查看 " (plist-get stock :name)))
                       (list (ths--text label (ths--color (ths-data-change stock)))))))
        visible)
