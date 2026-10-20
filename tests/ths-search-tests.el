@@ -10,9 +10,10 @@
 (defconst ths-search-test-response
   "{\"result\":[{\"code\":\"600519\",\"shortName\":\"贵州茅台\",\"securityTypeName\":\"沪A\",\"pinyin\":\"GZMT\"},{\"code\":\"000001\",\"shortName\":\"平安银行\",\"securityTypeName\":\"深A\"},{\"code\":\"920001\",\"shortName\":\"测试北交股\",\"securityTypeName\":\"京A\"},{\"code\":\"600519\",\"shortName\":\"贵州茅台\",\"securityTypeName\":\"沪A\"},{\"code\":\"000001\",\"shortName\":\"上证指数\",\"securityTypeName\":\"指数\"},{\"code\":\"00700\",\"shortName\":\"腾讯控股\",\"securityTypeName\":\"港股\"},{\"code\":\"510300\",\"shortName\":\"沪深300ETF\",\"securityTypeName\":\"基金\"}]}")
 
-(ert-deftest ths-search-parser-keeps-only-unique-mainland-stocks ()
+(ert-deftest ths-search-parser-keeps-unique-mainland-stocks-and-listed-funds ()
   (let ((rows (ths-data--search-parse ths-search-test-response)))
-    (should (equal '("sh600519" "sz000001" "bj920001") (mapcar (lambda (s) (plist-get s :symbol)) rows)))
+    (should (equal '("sh600519" "sz000001" "bj920001" "sh510300")
+                   (mapcar (lambda (s) (plist-get s :symbol)) rows)))
     (should (equal "贵州茅台" (plist-get (car rows) :name)))
     (should (equal "GZMT" (plist-get (car rows) :pinyin))))
   (should-not (ths-data--search-parse "{\"result\":[]}"))
@@ -29,13 +30,34 @@
       (ths-data-search "贵州&银行" (lambda (rows err) (setq result rows failure err)))
       (should (string-match-p "keyword=%E8%B4%B5%E5%B7%9E%26%E9%93%B6%E8%A1%8C" url))
       (funcall callback ths-search-test-response nil)
-      (should (= 3 (length result)))
+      (should (= 4 (length result)))
       (should-not failure)
       (funcall callback "{}" nil)
       (should failure)
       (should-not result)
       (funcall callback nil "offline")
       (should (equal "offline" failure)))))
+
+(ert-deftest ths-search-funds-require-trading-code-and-compatible-market ()
+  (let* ((text (json-serialize
+                `((result . ,(vconcat
+                              (mapcar (lambda (pair)
+                                        `((code . ,(car pair)) (shortName . "测试基金")
+                                          (securityTypeName . ,(cdr pair))))
+                                      '(("510300" . "沪基") ("159915" . "深基")
+                                        ("501018" . "LOF") ("161725" . "基金")
+                                        ("510300" . "ETF") ; Duplicate trading venue.
+                                        ("005827" . "基金") ; Off-exchange NAV code.
+                                        ("510300" . "指数")
+                                        ("159915" . "沪基")
+                                        ("161725" . "场外基金")
+                                        ("110001" . "债券") ("00700" . "港股"))))))))
+         (rows (ths-data--search-parse text)))
+    (should (equal '("sh510300" "sz159915" "sh501018" "sz161725")
+                   (mapcar (lambda (row) (plist-get row :symbol)) rows)))
+    (should (cl-every #'ths-data-fund-p rows))
+    (should (equal '("沪基" "深基" "沪基" "深基")
+                   (mapcar (lambda (row) (plist-get row :market-label)) rows)))))
 
 (ert-deftest ths-search-debounces-edits-and-keeps-completed-labels ()
   (let ((session (ths-search--create :local (ths-data--search-parse ths-search-test-response))))

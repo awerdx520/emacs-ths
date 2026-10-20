@@ -122,7 +122,7 @@
     (setf (ths-search--session-query session) query)
     (ths-search--set-rows session (ths-search--local session query))
     (setf (ths-search--session-status session)
-          (if (string-empty-p query) "输入股票代码或名称；TAB 选择候选" "搜索中…"))
+          (if (string-empty-p query) "输入股票／场内基金代码或名称；TAB 选择候选" "搜索中…"))
     (unless (string-empty-p query)
       (setf (ths-search--session-timer session)
             (run-with-idle-timer 0.3 nil #'ths-search--request session query (ths-search--session-generation session))))

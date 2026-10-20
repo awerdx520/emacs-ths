@@ -10,10 +10,8 @@
 (require 'cl-lib)
 (require 'xml)
 (require 'ths-data)
+(require 'ths-theme)
 
-(defconst ths-chart-up "#ff646e")
-(defconst ths-chart-down "#39d6a0")
-(defconst ths-chart-muted "#63738d")
 
 (defun ths-chart--volume-label (volume)
   "Format VOLUME in lots with compact Chinese magnitude labels."
@@ -30,7 +28,7 @@ Volumes remain in lots; an absent value is distinct from zero."
            for reference = (if daily (plist-get row :open) (or base price))
            collect (list :x x :volume (ths-data--volume (plist-get row :volume))
                          :time (plist-get row (if daily :date :time))
-                         :color (if (>= price reference) ths-chart-up ths-chart-down))
+                         :color (if (>= price reference) (ths-theme-color 'up) (ths-theme-color 'down)))
            do (setq base price)))
 
 (defun ths-chart--volume-svg (bars width left right)
@@ -40,13 +38,13 @@ Volumes remain in lots; an absent value is distinct from zero."
          (scale (max 1.0 (float maximum))))
     (concat
      "<g id=\"volume-panel\">"
-     (format "<path d=\"M%.2f 246 H%.2f M%.2f 294 H%.2f\" stroke=\"#26344a\"/>" left right left right)
-     (format "<text x=\"%.2f\" y=\"232\" fill=\"#91a4c1\">成交量（手） · 最新 %s%s</text>"
+     (format (concat "<path d=\"M%.2f 246 H%.2f M%.2f 294 H%.2f\" stroke=\"" (ths-theme-color 'grid) "\"/>") left right left right)
+     (format (concat "<text x=\"%.2f\" y=\"232\" fill=\"" (ths-theme-color 'secondary) "\">成交量（手） · 最新 %s%s</text>")
              left (ths-chart--volume-label (plist-get (car (last bars)) :volume))
              (if values "" " · 暂无数据"))
-     (format "<text x=\"%.2f\" y=\"250\" text-anchor=\"end\" fill=\"#63738d\">%s</text>"
+     (format (concat "<text x=\"%.2f\" y=\"250\" text-anchor=\"end\" fill=\"" (ths-theme-color 'muted) "\">%s</text>")
              (- left 10) (if values (ths-chart--volume-label maximum) "--"))
-     (format "<text x=\"%.2f\" y=\"298\" text-anchor=\"end\" fill=\"#63738d\">0</text>" (- left 10))
+     (format (concat "<text x=\"%.2f\" y=\"298\" text-anchor=\"end\" fill=\"" (ths-theme-color 'muted) "\">0</text>") (- left 10))
      (mapconcat
       (lambda (bar)
         (if-let* ((volume (plist-get bar :volume)))
@@ -86,35 +84,36 @@ The SVG is self-contained; no external files, scripts or fonts are fetched."
          (concat
           "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"720\" height=\"340\" viewBox=\"0 0 720 340\" preserveAspectRatio=\"none\">"
           "<defs><linearGradient id=\"area\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\">"
-          "<stop offset=\"0%\" stop-color=\"#55aaff\" stop-opacity=\"0.24\"/>"
-          "<stop offset=\"100%\" stop-color=\"#55aaff\" stop-opacity=\"0.015\"/>"
-          "</linearGradient></defs><rect width=\"720\" height=\"340\" fill=\"#111c2e\"/>"
+          (concat "<stop offset=\"0%\" stop-color=\"" (ths-theme-color 'area) "\" stop-opacity=\"0.24\"/>")
+          (concat "<stop offset=\"100%\" stop-color=\"" (ths-theme-color 'area) "\" stop-opacity=\"0.015\"/>")
+          (concat "</linearGradient></defs><rect width=\"720\" height=\"340\" fill=\"" (ths-theme-color 'panel) "\"/>")
           "<g font-family=\"monospace\" font-size=\"12\">"
           (mapconcat
            #'identity
            (cl-loop for i from 0 to 4
                     for price = (- high (* (/ i 4.0) (- high low)))
                     for py = (y price)
-                    for color = (cond ((< i 2) ths-chart-up) ((> i 2) ths-chart-down) (t "#91a4c1"))
+                    for color = (cond ((< i 2) (ths-theme-color 'up)) ((> i 2) (ths-theme-color 'down)) (t (ths-theme-color 'secondary)))
                     collect
                     (format (concat "<path d=\"M68 %.2f H644\" stroke=\"%s\" stroke-width=\"1\" stroke-dasharray=\"%s\"/>"
-                                    "<text x=\"58\" y=\"%.2f\" text-anchor=\"end\" fill=\"%s\">%.2f</text>"
+                                    "<text x=\"58\" y=\"%.2f\" text-anchor=\"end\" fill=\"%s\">%s</text>"
                                     "<text x=\"656\" y=\"%.2f\" fill=\"%s\">%+.2f%%</text>")
-                            py (if (= i 2) "#64758e" "#26344a") (if (= i 2) "5 4" "2 4")
-                            (+ py 4) color price (+ py 4) color (* 100 (/ (- price base) base)))) "")
+                            py (if (= i 2) (ths-theme-color 'baseline) (ths-theme-color 'grid)) (if (= i 2) "5 4" "2 4")
+                            (+ py 4) color (ths-data-format-price stock price)
+                            (+ py 4) color (* 100 (/ (- price base) base)))) "")
           (mapconcat
            #'identity
            (cl-loop for i from 0 to 4 for px = (+ left (* (/ i 4.0) (- right left)))
-                    collect (format "<path d=\"M%.2f 26 V294\" stroke=\"#26344a\" stroke-dasharray=\"2 4\"/>" px)) "")
+                    collect (format (concat "<path d=\"M%.2f 26 V294\" stroke=\"" (ths-theme-color 'grid) "\" stroke-dasharray=\"2 4\"/>") px)) "")
           (format "<path d=\"%s L%.2f 210 L%.2f 210 Z\" fill=\"url(#area)\"/>"
                   line (x (car (last points))) (x (car points)))
-          (format "<path id=\"mean-line\" d=\"%s\" fill=\"none\" stroke=\"#f4c96b\" stroke-width=\"1.6\" stroke-linejoin=\"round\"/>" (path (nreverse means)))
-          (format "<path id=\"price-line\" d=\"%s\" fill=\"none\" stroke=\"#73b7ff\" stroke-width=\"2.1\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>" line)
-          (format "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"3.2\" fill=\"#a6d5ff\"/>"
+          (format (concat "<path id=\"mean-line\" d=\"%s\" fill=\"none\" stroke=\"" (ths-theme-color 'warning) "\" stroke-width=\"1.6\" stroke-linejoin=\"round\"/>") (path (nreverse means)))
+          (format (concat "<path id=\"price-line\" d=\"%s\" fill=\"none\" stroke=\"" (ths-theme-color 'line) "\" stroke-width=\"2.1\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>") line)
+          (format (concat "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"3.2\" fill=\"" (ths-theme-color 'point) "\"/>")
                   (x (car (last points))) (y (car (last prices))))
           (ths-chart--volume-svg
            (ths-chart--volume-bars points (mapcar #'x points) nil base) 1.8 left right)
-          "<g fill=\"#8496b0\" font-size=\"12\"><text x=\"68\" y=\"322\">09:30</text>"
+          (concat "<g fill=\"" (ths-theme-color 'axis) "\" font-size=\"12\"><text x=\"68\" y=\"322\">09:30</text>")
           "<text x=\"212\" y=\"322\" text-anchor=\"middle\">10:30</text>"
           "<text x=\"356\" y=\"322\" text-anchor=\"middle\">11:30 / 13:00</text>"
           "<text x=\"500\" y=\"322\" text-anchor=\"middle\">14:00</text>"
@@ -127,7 +126,8 @@ Return nil when no candles are available."
   (when-let* ((candles (ths-data-candles stock (max 1 (or count 48)))))
     (let* ((minimum (apply #'min (mapcar (lambda (c) (plist-get c :low)) candles)))
            (maximum (apply #'max (mapcar (lambda (c) (plist-get c :high)) candles)))
-           (padding (max 0.01 (* maximum 0.005) (* (- maximum minimum) 0.08)))
+           (padding (max (if (ths-data-fund-p stock) 0.001 0.01)
+                         (* maximum 0.005) (* (- maximum minimum) 0.08)))
            (low (- minimum padding)) (high (+ maximum padding))
            (left 76.0) (right 700.0) (top 26.0) (bottom 210.0)
            (n (length candles)) (step (/ (- right left) n))
@@ -137,7 +137,7 @@ Return nil when no candles are available."
            (y (price) (+ top (* (/ (- high price) (- high low)) (- bottom top)))))
         (concat
          "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"720\" height=\"340\" viewBox=\"0 0 720 340\" preserveAspectRatio=\"none\">"
-         "<rect width=\"720\" height=\"340\" fill=\"#111c2e\"/>"
+         (concat "<rect width=\"720\" height=\"340\" fill=\"" (ths-theme-color 'panel) "\"/>")
          "<g font-family=\"monospace\" font-size=\"12\">"
          (mapconcat
           #'identity
@@ -145,16 +145,16 @@ Return nil when no candles are available."
                    for price = (- high (* (/ i 4.0) (- high low)))
                    for py = (y price)
                    collect
-                   (format (concat "<path d=\"M76 %.2f H700\" stroke=\"#26344a\" stroke-dasharray=\"2 4\"/>"
-                                   "<text x=\"66\" y=\"%.2f\" text-anchor=\"end\" fill=\"#91a4c1\">%.2f</text>")
-                           py (+ py 4) price)) "")
+                   (format (concat (concat "<path d=\"M76 %.2f H700\" stroke=\"" (ths-theme-color 'grid) "\" stroke-dasharray=\"2 4\"/>")
+                                   (concat "<text x=\"66\" y=\"%.2f\" text-anchor=\"end\" fill=\"" (ths-theme-color 'secondary) "\">%s</text>"))
+                           py (+ py 4) (ths-data-format-price stock price))) "")
          (mapconcat
           #'identity
           (cl-loop for candle in candles for i from 0
                    for px = (x i)
                    for open = (plist-get candle :open)
                    for close = (plist-get candle :close)
-                   for color = (if (>= close open) ths-chart-up ths-chart-down)
+                   for color = (if (>= close open) (ths-theme-color 'up) (ths-theme-color 'down))
                    for body-top = (y (max open close))
                    for body-bottom = (y (min open close))
                    collect
@@ -175,7 +175,7 @@ Return nil when no candles are available."
           body-width left right)
          (mapconcat
           (lambda (i)
-            (format "<text class=\"date-label\" x=\"%.2f\" y=\"322\" text-anchor=\"%s\" fill=\"#8496b0\">%s</text>"
+            (format (concat "<text class=\"date-label\" x=\"%.2f\" y=\"322\" text-anchor=\"%s\" fill=\"" (ths-theme-color 'axis) "\">%s</text>")
                     (cond ((= n 1) (x i)) ((= i 0) left) ((= i (1- n)) right) (t (x i)))
                     (cond ((= n 1) "middle") ((= i 0) "start") ((= i (1- n)) "end") (t "middle"))
                     (xml-escape-string (or (plist-get (nth i candles) :date) "--"))))
@@ -187,14 +187,15 @@ Return nil when no candles are available."
   (max 0 (min (1- height)
               (round (* (1- height) (/ (- high value) (max 0.001 (- high low))))))))
 
-(defun ths-chart--render (grid low high)
-  "Add axis labels to GRID spanning LOW to HIGH."
+(defun ths-chart--render (grid low high &optional stock)
+  "Add STOCK's price axis labels to GRID spanning LOW to HIGH."
   (let ((height (length grid)))
     (mapconcat
      (lambda (i)
        (concat (propertize
-                (format "%8.2f │" (- high (* (/ (float i) (1- height)) (- high low))))
-                'face `(:foreground ,ths-chart-muted))
+                (format "%8s │" (ths-data-format-price
+                                 stock (- high (* (/ (float i) (1- height)) (- high low)))))
+                'face `(:foreground ,(ths-theme-color 'muted)))
                (mapconcat #'identity (aref grid i) "")))
      (number-sequence 0 (1- height)) "\n")))
 
@@ -216,7 +217,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
                   (truncate-string-to-width
                    (concat "成交量（手） · 柱峰 " (if known (ths-chart--volume-label maximum) "--"))
                    (+ width 10) 0 ?\s)
-                  'face `(:foreground ,ths-chart-muted)) "\n"))
+                  'face `(:foreground ,(ths-theme-color 'muted))) "\n"))
        (mapconcat
         (lambda (i)
           (concat
@@ -225,7 +226,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
                      (cond ((not heading) "量/手")
                            ((= i 0) (ths-chart--volume-label maximum))
                            ((= i (1- height)) "0") (t "")) 8 0 ?\s) " │")
-            'face `(:foreground ,ths-chart-muted))
+            'face `(:foreground ,(ths-theme-color 'muted)))
            (if (and (not known) (= i 0))
                (truncate-string-to-width "暂无成交量" width 0 ?\s)
              (mapconcat
@@ -234,7 +235,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
                        (level (max 0 (min 8 (ceiling (- (* height 8 (/ volume scale))
                                                        (* 8 (- height i 1))))))))
                   (propertize (substring " ▁▂▃▄▅▆▇█" level (1+ level))
-                              'face `(:foreground ,(or (aref colors x) ths-chart-muted)))))
+                              'face `(:foreground ,(or (aref colors x) (ths-theme-color 'muted))))))
               (number-sequence 0 (1- width)) ""))))
         (number-sequence 0 (1- height)) "\n")))))
 
@@ -259,12 +260,12 @@ Sum volumes that fall in the same terminal column, retaining its last color."
                do (when previous
                     (cl-loop for row from (min previous y) to (max previous y)
                              do (aset (aref grid row) x
-                                      (propertize "│" 'face '(:foreground "#73b7ff")))))
+                                      (propertize "│" 'face (list :foreground (ths-theme-color 'line))))))
                do (aset (aref grid (ths-chart--row (/ total i) low high height)) x
-                        (propertize "·" 'face '(:foreground "#f4c96b")))
-               do (aset (aref grid y) x (propertize "●" 'face '(:foreground "#73b7ff")))
+                        (propertize "·" 'face (list :foreground (ths-theme-color 'warning))))
+               do (aset (aref grid y) x (propertize "●" 'face (list :foreground (ths-theme-color 'line))))
                do (setq previous y))
-      (concat (ths-chart--render grid low high) "\n"
+      (concat (ths-chart--render grid low high stock) "\n"
               (ths-chart--volume-text
                (ths-chart--volume-bars points positions nil (ths-data-chart-base stock))
                width volume-rows heading)))))
@@ -281,14 +282,14 @@ Sum volumes that fall in the same terminal column, retaining its last color."
            (grid (vconcat (cl-loop repeat height collect (make-vector (* 2 (length candles)) " ")))))
       (cl-loop for candle in candles for x from 0 by 2
                for open = (plist-get candle :open) for close = (plist-get candle :close)
-               for color = (if (>= close open) ths-chart-up ths-chart-down)
+               for color = (if (>= close open) (ths-theme-color 'up) (ths-theme-color 'down))
                do (cl-loop for row from (ths-chart--row (plist-get candle :high) low high height)
                            to (ths-chart--row (plist-get candle :low) low high height)
                            do (aset (aref grid row) x (propertize "│" 'face `(:foreground ,color))))
                do (cl-loop for row from (ths-chart--row (max open close) low high height)
                            to (ths-chart--row (min open close) low high height)
                            do (aset (aref grid row) x (propertize "┃" 'face `(:foreground ,color)))))
-      (concat (ths-chart--render grid low high) "\n"
+      (concat (ths-chart--render grid low high stock) "\n"
               (ths-chart--volume-text
                (ths-chart--volume-bars candles (number-sequence 0 (* 2 (1- (length candles))) 2) t)
                (* 2 (length candles)) volume-rows heading)))))

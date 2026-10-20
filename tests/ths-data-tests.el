@@ -14,6 +14,64 @@
 (defconst ths-test-eastmoney-minute
   "{\"data\":{\"preClose\":168.0,\"trends\":[\"2026-10-16 09:30,170,170,171,169,100,1700000,170\",\"2026-10-16 10:30,173,173.88,174,172,200,3400000,172\"]}}")
 
+(ert-deftest ths-fund-quotes-keep-milliprices-across-providers ()
+  ;; Synthetic protocol fixtures: adjacent prices must not collapse to cents.
+  (dolist (symbol '("sh510300" "sz159915" "sh501018" "sz161725"))
+    (let* ((code (substring symbol 2))
+           (tx (make-vector 39 ""))
+           (sina (make-vector 32 ""))
+           (em `((data . ((f57 . ,code) (f58 . "测试基金") (f43 . 1.234)
+                         (f60 . 1.230) (f19 . 1.233) (f20 . 100)
+                         (f39 . 1.235) (f40 . 110))))))
+      (dolist (pair `((1 . "测试基金") (2 . ,code) (3 . "1.234") (4 . "1.230")
+                      (9 . "1.233") (10 . "100") (19 . "1.235") (20 . "110")))
+        (aset tx (car pair) (cdr pair)))
+      (dolist (pair '((0 . "测试基金") (2 . "1.230") (3 . "1.234")
+                      (10 . "10000") (11 . "1.233") (20 . "11000") (21 . "1.235")))
+        (aset sina (car pair) (cdr pair)))
+      (dolist (quote (list (ths-data--quote-tencent
+                           (format "v_%s=\"%s\";" symbol (mapconcat #'identity tx "~")) symbol)
+                          (ths-data--quote-sina
+                           (format "var hq_str_%s=\"%s\";" symbol (mapconcat #'identity sina ",")) symbol)
+                          (ths-data--quote-eastmoney (json-serialize em) symbol)))
+        (should (= 1.234 (plist-get quote :price)))
+        (should (equal '("买1" 1.233 100.0 bid) (nth 5 (plist-get quote :book))))
+        (should (equal '("卖1" 1.235 110.0 ask) (nth 4 (plist-get quote :book))))))))
+
+(ert-deftest ths-fund-charts-route-both-markets-and-fallback-with-volume ()
+  (dolist (symbol '("sh510300" "sz159915" "sh501018" "sz161725"))
+    (let* ((ths-data-providers '(tencent eastmoney))
+           (minute (format
+                    "{\"data\":{\"%s\":{\"data\":{\"date\":\"20261019\",\"data\":[\"0930 1.234 100\",\"0931 1.235 130\"]},\"qt\":{\"%s\":[\"\",\"基金\",\"\",\"1.235\",\"1.230\"]}}}}"
+                    symbol symbol))
+           (daily (format "{\"data\":{\"%s\":{\"day\":[[\"2026-10-19\",\"1.231\",\"1.234\",\"1.235\",\"1.230\",\"130\"]]}}}" symbol))
+           (em-minute "{\"data\":{\"preClose\":1.230,\"trends\":[\"2026-10-19 09:30,1.234,1.234,1.234,1.234,100,12340,1.234\",\"2026-10-19 09:31,1.235,1.235,1.235,1.235,30,3705,1.235\"]}}")
+           (em-daily "{\"data\":{\"klines\":[\"2026-10-19,1.231,1.234,1.235,1.230,130\"]}}"))
+      (dolist (kind '(intraday daily))
+        (let ((expected (ths-data--chart (if (eq kind 'intraday) minute daily) symbol 'tencent kind))
+              calls result)
+          (cl-letf (((symbol-function 'ths-data--http)
+                     (lambda (url provider callback)
+                       (push provider calls)
+                       (should (equal url (ths-data--url provider kind symbol)))
+                       (if (eq provider 'tencent)
+                           (funcall callback nil "unavailable")
+                         (should (string-match-p
+                                  (regexp-quote (concat "secid=" (if (string-prefix-p "sh" symbol) "1." "0.")
+                                                        (substring symbol 2))) url))
+                         (funcall callback (if (eq kind 'intraday) em-minute em-daily) nil))
+                       #'ignore)))
+            (ths-data-fetch symbol kind
+                            (lambda (value failure) (should-not failure) (setq result value))))
+          (should (equal '(eastmoney tencent) calls))
+          (if (eq kind 'intraday)
+              (progn
+                (should (= 1.230 (plist-get result :intraday-close)))
+                (should (equal '(100 30) (mapcar (lambda (p) (plist-get p :volume))
+                                               (plist-get result :points))))
+                (should (equal (ths-data-series expected) (ths-data-series result))))
+            (should (equal (plist-get expected :candles) (plist-get result :candles)))))))))
+
 (ert-deftest ths-providers-normalize-price-amount-book-and-encoding ()
   (let ((tx (ths-data--quote-tencent ths-test-tencent "sz300033"))
         (sina (ths-data--quote-sina ths-test-sina "sz300033"))

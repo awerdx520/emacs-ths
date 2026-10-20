@@ -158,7 +158,7 @@
          (group (ths-test-daily-svg-group candles))
          (bars (seq-filter (lambda (g) (equal (xml-get-attribute g 'class) "candle")) (xml-get-children group 'g))))
     (should (= 2 (length bars)))
-    (cl-loop for bar in bars for color in (list ths-chart-up ths-chart-down)
+    (cl-loop for bar in bars for color in (list (ths-theme-color 'up) (ths-theme-color 'down))
              do (let* ((wick (car (xml-get-children bar 'line)))
                        (body (car (xml-get-children bar 'rect)))
                        (x (string-to-number (xml-get-attribute body 'x)))

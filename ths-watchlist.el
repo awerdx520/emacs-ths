@@ -9,16 +9,18 @@
   :type '(choice (const nil) file) :group 'ths)
 
 (defun ths-watchlist-symbol (input)
-  "Normalize INPUT as a stock symbol, inferring market for six-digit codes."
+  "Normalize stock or ETF/LOF INPUT, inferring the market from trading codes."
   (let ((value (downcase (string-trim input))))
     (when (string-match-p "\\`[0-9]\\{6\\}\\'" value)
-      (setq value (concat (pcase (aref value 0)
-                            (?6 "sh") ((or ?0 ?3) "sz")
-                            ((or ?4 ?8 ?9) "bj")
-                            (_ (user-error "无法识别市场，请输入 sh、sz 或 bj 前缀"))) value)))
+      (setq value (concat (or (ths-data-fund-market value)
+                             (pcase (aref value 0)
+                               (?6 "sh") ((or ?0 ?3) "sz")
+                               ((or ?4 ?8 ?9) "bj")
+                               (_ (user-error "无法识别市场，请输入 sh、sz 或 bj 前缀"))))
+                         value)))
     (unless (and (string-match-p "\\`\\(?:sh\\|sz\\|bj\\)[0-9]\\{6\\}\\'" value)
                  (not (member value ths-data-index-symbols)))
-      (user-error "请输入股票代码，例如 600519、sz000001 或 bj920001"))
+      (user-error "请输入股票或场内基金交易代码，例如 600519、510300 或 sz159915"))
     value))
 
 (defun ths-watchlist-load ()

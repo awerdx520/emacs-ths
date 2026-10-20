@@ -16,6 +16,7 @@
 (require 'ths-watchlist)
 (require 'ths-search)
 (require 'ths-chart)
+(require 'ths-theme)
 
 (defcustom ths-buffer-name "*同花顺*"
   "Name of the market dashboard buffer." :type 'string :group 'ths)
@@ -72,6 +73,28 @@
   (etaf-update-value ths--state
                      (lambda (old) (plist-put (copy-sequence old) :revision
                                               (1+ (or (plist-get old :revision) 0))))))
+
+(defun ths--apply-buffer-theme ()
+  "Apply the current theme to the dashboard's unused buffer area."
+  (setq-local buffer-face-mode-face
+              (list :foreground (ths-theme-color 'foreground)
+                    :background (ths-theme-color 'background)))
+  (buffer-face-mode 1))
+
+(defun ths--theme-changed ()
+  "Repaint mounted dashboards without discarding market data or selection."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (and ths--state (etaf-runtime-for-buffer buffer))
+        (ths--apply-buffer-theme)
+        (ths--publish)))))
+
+(add-hook 'ths-theme-change-hook #'ths--theme-changed)
+
+(defun ths-toggle-theme ()
+  "Switch all THS dashboards between dark and light colors."
+  (interactive)
+  (customize-set-variable 'ths-theme (if (eq ths-theme 'dark) 'light 'dark)))
 
 (defun ths--fetch (symbol kind)
   "Request SYMBOL's KIND once; merge only into the owning live dashboard."
@@ -385,7 +408,7 @@
                       (_ (or value "--")))))
             (color (cond ((and stock (eq key :change-60d)) (ths--color value))
                          ((and stock (memq key '(:price :change))) (ths--color (plist-get stock :change)))
-                         (t "#91a4c1"))))
+                         (t (ths-theme-color 'secondary)))))
        (etaf-node 'box (list :width (list 'ch width) :height '(lh 1) :overflow 'hidden :help-echo text)
                   (list (ths--text (truncate-string-to-width text (1- width)) color))))) fields))
 
@@ -402,7 +425,7 @@
                       (* (/ (max 0 (1- (length rows))) capacity) capacity))))
     (etaf-node
      'column (list :ref 'ranking-frame :height (list 'lh (1- (or (cdr (etaf-runtime-viewport)) (window-body-height) 40)))
-                   :overflow 'hidden :bgcolor "#0b1423" :color "#dce5f4" :padding '((lh 0) (ch 1)))
+                   :overflow 'hidden :bgcolor (ths-theme-color 'background) :color (ths-theme-color 'foreground) :padding '((lh 0) (ch 1)))
      (list
       (etaf-node 'row '(:item-gap (ch 1))
                  (list (ths--button 'page-quotes "行情 0" #'ths-show-quotes)
@@ -412,7 +435,7 @@
                  (list (ths--button 'rank-change "涨幅榜 ↓" (lambda () (ths--ranking-select ref 'change)) (eq sort 'change))
                        (ths--button 'rank-amount "成交额榜 ↓" (lambda () (ths--ranking-select ref 'amount)) (eq sort 'amount))))
       (ths--text (if (eq sort 'amount) "沪深京 A 股 · 按成交额降序 · 单位：元"
-                   "沪深京 A 股 · 从高到低 · 成交量单位：手（100 股）") "#91a4c1")
+                   "沪深京 A 股 · 从高到低 · 成交量单位：手（100 股）") (ths-theme-color 'secondary))
       (ths--text (concat (ths--source (plist-get data :source)) " · "
                          (if stamp (concat "采集时间 " (format-time-string "%F %T" (seconds-to-time stamp) 28800))
                            "尚未获取数据")
@@ -420,10 +443,10 @@
                                (failure (if rows " · 更新失败，保留上次榜单" " · 获取失败，按 r 重试"))
                                (t ""))
                          (when (eq (plist-get data :source) 'sina) " · 60日涨跌幅暂缺"))
-                 (if failure "#f4c96b" "#91a4c1"))
+                 (if failure (ths-theme-color 'warning) (ths-theme-color 'secondary)))
       (when failure
         (etaf-node 'box (list :help-echo failure)
-                   (list (ths--text (truncate-string-to-width failure (max 20 (- columns 6))) "#f4c96b"))))
+                   (list (ths--text (truncate-string-to-width failure (max 20 (- columns 6))) (ths-theme-color 'warning)))))
       (ths--panel
        (format "%s / 第 %d 页 / 共 %s 支" (if (eq sort 'amount) "成交额排行" "涨幅排行") page
                (if total (number-to-string total) "--"))
@@ -439,10 +462,10 @@
                                                     (lambda () (setq ths--ranking-toolbar-stock (cons key selected))))
                                   :on-press (let ((selected stock))
                                               (lambda () (ths--ranking-open ref selected)))
-                                  :hover-style '(:background-color "#263d60")
+                                  :hover-style (list :background-color (ths-theme-color 'selected))
                                   :help-echo (format "查看 %s" (plist-get stock :name)))
                             (ths--ranking-cells fields stock)))
-        (unless rows (list (ths--text (if loading "正在获取排行榜…" "暂无排行数据") "#f4c96b")))))
+        (unless rows (list (ths--text (if loading "正在获取排行榜…" "暂无排行数据") (ths-theme-color 'warning))))))
       (etaf-node 'row '(:item-gap (ch 2))
                  (list (ths--button 'rank-prev "上一页 p" #'ths-ranking-previous-page)
                        (ths--text (format "%d / %s · 段 %d/%d" page (if total (number-to-string (max 1 (ceiling total ths-data-ranking-page-size))) "--")
@@ -474,7 +497,7 @@
 
 (defun ths--color (change)
   "Return the A-share quote color for CHANGE."
-  (cond ((null change) "#91a4c1") ((> change 0) ths-chart-up) ((< change 0) ths-chart-down) (t "#c8d2e3")))
+  (cond ((null change) (ths-theme-color 'secondary)) ((> change 0) (ths-theme-color 'up)) ((< change 0) (ths-theme-color 'down)) (t (ths-theme-color 'neutral))))
 
 (defun ths--text (text &optional color)
   "Return a text View containing TEXT and optional COLOR."
@@ -490,9 +513,9 @@ HELP overrides its tooltip; COMPACT removes horizontal padding."
   (etaf-node 'box
              (list :ref ref :role 'button :tab-index 0
                    :on-press callback :padding (if compact '((lh 0) (ch 0)) '((lh 0) (ch 1))) :height '(lh 1) :overflow 'hidden
-                   :bgcolor (if selected "#263d60" "#192438")
-                   :color (if selected "#ffffff" "#a7b8cf")
-                   :hover-style '(:background-color "#304767")
+                   :bgcolor (if selected (ths-theme-color 'selected) (ths-theme-color 'button))
+                   :color (if selected (ths-theme-color 'selected-text) (ths-theme-color 'button-text))
+                   :hover-style (list :background-color (ths-theme-color 'hover))
                    :help-echo (or help label))
              (list label)))
 
@@ -512,10 +535,10 @@ HELP overrides its tooltip; COMPACT removes horizontal padding."
   "Return a panel with TITLE, CHILDREN, character WIDTH and optional REF.
 Named panels occupy the current height budget, including padding."
   (etaf-node 'column
-             (append (list :padding (if ths--roomy '((lh 1) (ch 1)) '((lh 0) (ch 1))) :bgcolor "#111c2e")
+             (append (list :padding (if ths--roomy '((lh 1) (ch 1)) '((lh 0) (ch 1))) :bgcolor (ths-theme-color 'panel))
                      (when ref (list :ref ref :height (list 'lh ths--panel-rows)))
                      (when width (list :width (list 'ch width))))
-             (append (list (ths--text title "#91a4c1")
+             (append (list (ths--text title (ths-theme-color 'secondary))
                            (ths--space (if ths--roomy 1 0))) children)))
 
 (defun ths--favorite (ref)
@@ -601,7 +624,7 @@ NAME is optional display metadata selected from stock search suggestions."
                                      (eq (plist-get state :tab) 'favorites))
 			(ths--button 'sort "涨幅 ↓" (lambda () (ths--set ref :sorted (not (plist-get (etaf-value ref) :sorted))))
                                      (plist-get state :sorted))))
-       (ths--text "  代码    名称        最新     涨跌幅" "#63738d"))
+       (ths--text "  代码    名称        最新     涨跌幅" (ths-theme-color 'muted)))
       (mapcar
        (lambda (stock)
 	 (let* ((code (plist-get stock :code))
@@ -609,14 +632,14 @@ NAME is optional display metadata selected from stock search suggestions."
 		(label (format "%s %s  %s %8s  %8s"
                                (if (member code (plist-get state :favorites)) "*" " ")
                                code (truncate-string-to-width (plist-get stock :name) 8 0 ?\s)
-                               (ths--number (plist-get stock :price))
+                               (ths-data-format-price stock (plist-get stock :price))
                                (ths--number (ths-data-change stock) "%+.2f%%"))))
            (etaf-node 'box
                       (list :ref (intern (concat "stock-" code)) :key code
                             :role 'button :tab-index 0 :height (list 'lh row-height) :overflow 'hidden :padding '((lh 0) (ch 0))
                             :on-press (lambda () (ths--set ref :selected code) (ths--set ref :section 'detail))
-                            :bgcolor (if selected "#263d60" "#111c2e")
-                            :hover-style '(:background-color "#22334e")
+                            :bgcolor (if selected (ths-theme-color 'selected) (ths-theme-color 'panel))
+                            :hover-style (list :background-color (ths-theme-color 'row-hover))
                             :help-echo (concat "查看 " (plist-get stock :name)))
                       (list (ths--text label (ths--color (ths-data-change stock)))))))
        visible)
@@ -628,8 +651,8 @@ NAME is optional display metadata selected from stock search suggestions."
       (unless (ths--stocks state)
 	(list (ths--text (if (and (eq (plist-get state :tab) 'favorites)
 				  (null (plist-get state :favorites)))
-                             "暂无自选；按 a 添加股票。"
-                           "没有匹配股票；按 / 清空搜索。") "#f4c96b"))))
+                             "暂无自选；按 a 添加股票或基金。"
+                           "没有匹配股票；按 / 清空搜索。") (ths-theme-color 'warning)))))
      42 'watchlist-panel)))
 
 (defun ths--detail (state ref width)
@@ -650,25 +673,26 @@ NAME is optional display metadata selected from stock search suggestions."
                  (plist-get stock :sector))
          (list
           (etaf-node 'row '(:item-gap (ch 2))
-                     (list (ths--text (format "%s  %s  %s" (ths--number (plist-get stock :price))
-                                              (ths--number (when change (- (plist-get stock :price) (plist-get stock :close))) "%+.2f")
+                     (list (ths--text (format "%s  %s  %s" (ths-data-format-price stock (plist-get stock :price))
+                                              (ths-data-format-price stock (when change (- (plist-get stock :price) (plist-get stock :close))) t)
                                               (ths--number change "%+.2f%%"))
                                       (ths--color change))
                            (ths--button 'favorite-toggle
                                         (if (member (plist-get stock :code) (plist-get state :favorites)) "移出自选" "+ 加自选")
                                         (lambda () (ths--favorite ref)))))
           (ths--text (format "昨收 %s    最高 %s    最低 %s"
-                             (ths--number (plist-get stock :close)) (ths--number (plist-get stock :high))
-                             (ths--number (plist-get stock :low))) "#91a4c1")
-          (ths--text (format "成交额 %s    换手率 %s" (ths--amount (plist-get stock :amount)) (ths--number (plist-get stock :turnover) "%.2f%%")) "#91a4c1")
+                             (ths-data-format-price stock (plist-get stock :close))
+                             (ths-data-format-price stock (plist-get stock :high))
+                             (ths-data-format-price stock (plist-get stock :low))) (ths-theme-color 'secondary))
+          (ths--text (format "成交额 %s    换手率 %s" (ths--amount (plist-get stock :amount)) (ths--number (plist-get stock :turnover) "%.2f%%")) (ths-theme-color 'secondary))
           (ths--space (if ths--roomy 1 0))
           (etaf-node 'row '(:item-gap (ch 1))
                      (list (ths--button 'intraday "分时" (lambda () (ths--set ref :chart 'intraday)) intraday)
                            (ths--button 'daily "日 K" (lambda () (ths--set ref :chart 'daily)) (not intraday))))
-          (ths--text (if intraday "分时走势  · 蓝色价格 / 黄色均线" "日 K  · 红涨绿跌 / 不复权") "#91a4c1")
+          (ths--text (if intraday "分时走势  · 蓝色价格 / 黄色均线" "日 K  · 红涨绿跌 / 不复权") (ths-theme-color 'secondary))
           (etaf-node 'column (list :ref 'chart-region :height (list 'lh chart-rows))
                      (list (cond
-                            ((not available) (ths--text (if chart-error "暂无图表数据 · 获取失败，按 r 重试" "暂无图表数据 · 等待获取") "#f4c96b"))
+                            ((not available) (ths--text (if chart-error "暂无图表数据 · 获取失败，按 r 重试" "暂无图表数据 · 等待获取") (ths-theme-color 'warning)))
                             ((and (display-graphic-p) (image-type-available-p 'svg))
                              (etaf-node 'image (list :ref (if intraday 'intraday-chart 'daily-chart)
                                                      :src (list 'image :type 'svg :data
@@ -681,16 +705,16 @@ NAME is optional display metadata selected from stock search suggestions."
                                                 (ths--text (if intraday "         09:30               11:30 / 13:00          15:00"
                                                              (let ((candles (ths-data-candles stock (/ (- chart-width 10) 2))))
                                                                (format "         %s — %s" (plist-get (car candles) :date)
-                                                                       (plist-get (car (last candles)) :date)))) "#63738d")))))))
+                                                                       (plist-get (car (last candles)) :date)))) (ths-theme-color 'muted))))))))
           (ths--space (if ths--roomy 1 0))
           (ths--text (format "报价 %s · %s%s" (ths--source (plist-get stock :quote-source))
                              (or (plist-get stock :time) "暂无行情时间")
-                             (if (plist-get stock :quote-error) " · 更新失败，保留上次数据" "")) "#91a4c1")
+                             (if (plist-get stock :quote-error) " · 更新失败，保留上次数据" "")) (ths-theme-color 'secondary))
           (ths--text (format "图表 %s · %s%s"
                              (ths--source (plist-get stock (intern (format ":%s-source" kind))))
                              (if intraday (or (plist-get stock :intraday-date) "--")
                                (or (plist-get (car (last (plist-get stock :candles))) :date) "--"))
-                             (if chart-error " · 更新失败，保留上次数据" "")) "#91a4c1"))
+                             (if chart-error " · 更新失败，保留上次数据" "")) (ths-theme-color 'secondary)))
          width 'detail-panel)))))
 
 (defun ths--book (state)
@@ -700,24 +724,24 @@ NAME is optional display metadata selected from stock search suggestions."
      "五档盘口 / 手"
      (if (not stock) (list (ths--text "暂无选中股票"))
        (append
-        (list (ths--text "档位    价格     数量" "#63738d"))
+        (list (ths--text "档位    价格     数量" (ths-theme-color 'muted)))
         (cl-loop for (label price volume side) in (ths-data-book stock)
                  append (append
                          (when (and ths--roomy (equal label "买1"))
                            ;; Box-drawing glyphs can use a wide fallback font.
                            ;; ASCII fits within the panel's content area.
-                           (list (ths--text (make-string 20 ?-) "#30415b")))
-                         (list (ths--text (format "%s %9s %7s" label (ths--number price) (ths--number volume "%.2f"))
-                                          (if (eq side 'ask) ths-chart-up ths-chart-down)))))
+                           (list (ths--text (make-string 20 ?-) (ths-theme-color 'border))))
+                         (list (ths--text (format "%s %9s %7s" label (ths-data-format-price stock price) (ths--number volume "%.2f"))
+                                          (if (eq side 'ask) (ths-theme-color 'up) (ths-theme-color 'down))))))
         (list (ths--space (if ths--roomy 1 0))
               (ths--text (if (ths-data-book stock)
                              (format "%s · %s" (ths--source (plist-get stock :quote-source))
                                      (if (plist-get stock :quote-error) "更新失败" "行情快照"))
-                           "暂无盘口数据") "#91a4c1"))))
+                           "暂无盘口数据") (ths-theme-color 'secondary)))))
      32 'book-panel)))
 
-(defun ths--trade-cells (&optional trade)
-  "Build fixed-width cells for TRADE, or column headings when nil."
+(defun ths--trade-cells (&optional trade stock)
+  "Build cells for TRADE in STOCK's price precision, or headings when nil."
   (let ((side (plist-get trade :side)))
     (mapcar
      (lambda (field)
@@ -725,11 +749,11 @@ NAME is optional display metadata selected from stock search suggestions."
               (value (plist-get trade key))
               (text (if (not trade) (nth 1 field)
                       (pcase key
-                        (:price (ths--number value))
+                        (:price (ths-data-format-price stock value))
                         (:volume (if (= value (truncate value)) (format "%.0f" value) (format "%.2f" value)))
                         (:side (pcase value ('buy "买盘") ('sell "卖盘") ('neutral "中性") (_ "未知")))
                         (_ value))))
-              (color (pcase side ('buy ths-chart-up) ('sell ths-chart-down) (_ "#91a4c1"))))
+              (color (pcase side ('buy (ths-theme-color 'up)) ('sell (ths-theme-color 'down)) (_ (ths-theme-color 'secondary)))))
          (etaf-node 'box (list :width (list 'ch width) :height '(lh 1) :overflow 'hidden :help-echo text)
                     (list (ths--text text color)))))
      '((:time "时间" 9) (:price "价格" 8) (:volume "量/手" 8) (:side "性质" 5)))))
@@ -751,19 +775,19 @@ NAME is optional display metadata selected from stock search suggestions."
       (cl-loop for trade in trades for i from 0
                for row-height = (- (/ (* (1+ i) table-rows) (length trades))
                                    (/ (* i table-rows) (length trades)))
-               collect (etaf-node 'row (list :height (list 'lh row-height)) (ths--trade-cells trade)))
+               collect (etaf-node 'row (list :height (list 'lh row-height)) (ths--trade-cells trade stock)))
       (unless trades (list (ths--text (cond (failure "获取失败，按 r 重试")
                                             (stamp "暂无成交记录")
-                                            (t "等待成交记录…")) "#f4c96b")))
+                                            (t "等待成交记录…")) (ths-theme-color 'warning))))
       (list (ths--space (+ (max 0 free) (if ths--roomy 1 0)))
-            (ths--text "东方财富 · 最新记录在上" "#91a4c1")
+            (ths--text "东方财富 · 最新记录在上" (ths-theme-color 'secondary))
             (ths--text (if stamp (concat "采集 " (format-time-string "%m-%d %T" (seconds-to-time stamp) 28800))
-                         "尚未获取数据") "#63738d")
-            (ths--text "接口未提供交易日期" "#63738d")
-            (ths--text "分时汇总 · 非完整逐笔" "#63738d"))
+                         "尚未获取数据") (ths-theme-color 'muted))
+            (ths--text "接口未提供交易日期" (ths-theme-color 'muted))
+            (ths--text "分时汇总 · 非完整逐笔" (ths-theme-color 'muted)))
       (when failure
         (list (etaf-node 'box (list :help-echo failure)
-                         (list (ths--text (if trades "更新失败，保留上次记录" "成交接口暂不可用") "#f4c96b"))))))
+                         (list (ths--text (if trades "更新失败，保留上次记录" "成交接口暂不可用") (ths-theme-color 'warning)))))))
      32 'trades-panel)))
 
 (defun ths--market-sidebar (state)
@@ -806,13 +830,13 @@ NAME is optional display metadata selected from stock search suggestions."
                           '(("a" "添加") ("d" "删除") ("f" "自选") ("s" "排序")))
                         '(("p" "上一页") ("n" "下一页"))
                         (if ranking '(("0" "行情")) '(("1" "分时") ("2" "日K") ("/" "搜索")))
-                        '(("r" "刷新") ("q" "退出"))))
+                        '(("r" "刷新") ("T" "主题") ("q" "退出"))))
          (full-width (+ (1- (length items))
                         (cl-loop for (key label) in items sum (+ 3 (string-width key) (string-width label)))))
          (compact (> full-width (- columns 2))))
     (when (< columns 80)
-      (setq items (seq-filter (lambda (item) (member (car item) (if ranking '("j" "k" "RET" "s" "n" "r" "0")
-                                                               '("j" "k" "a" "d" "/" "r" "q")))) items)))
+      (setq items (seq-filter (lambda (item) (member (car item) (if ranking '("j" "k" "RET" "s" "r" "T" "0")
+                                                               '("j" "k" "a" "d" "/" "r" "T")))) items)))
     (etaf-node
      'row (list :ref 'shortcut-hint :height '(lh 1) :overflow 'hidden :item-gap '(ch 1))
      (mapcar (lambda (item)
@@ -841,7 +865,7 @@ NAME is optional display metadata selected from stock search suggestions."
       (etaf-node
        'column (list :ref 'dashboard-frame :height (list 'lh height) :overflow 'hidden
                      :item-gap (list 'lh gap)
-                     :bgcolor "#0b1423" :color "#dce5f4" :padding '((lh 0) (ch 1)))
+                     :bgcolor (ths-theme-color 'background) :color (ths-theme-color 'foreground) :padding '((lh 0) (ch 1)))
        (list
         (etaf-node
          'column '(:ref dashboard-header :height (lh 3))
@@ -858,7 +882,7 @@ NAME is optional display metadata selected from stock search suggestions."
               (let ((change (ths-data-change stock)))
                 (etaf-node
                  'row '(:height (lh 1) :item-gap (ch 1))
-                 (list (ths--text (plist-get stock :name) "#91a4c1")
+                 (list (ths--text (plist-get stock :name) (ths-theme-color 'secondary))
                        (ths--text (format "%s %s" (ths--number (plist-get stock :price))
                                           (ths--number change "%+.2f%%"))
                                   (ths--color change))))))
@@ -881,6 +905,14 @@ NAME is optional display metadata selected from stock search suggestions."
                        "Reactive market dashboard."
                        :setup
                        (let ((buffer (current-buffer)))
+                         (etaf-theme-provide
+                          (etaf-computed
+                           (lambda ()
+                             ;; Revision changes also refresh static focus styles.
+                             (etaf-value state)
+                             (list :ths-panel (ths-theme-color 'panel)
+                                   :ths-alternate (ths-theme-color 'alternate)
+                                   :ths-selected (ths-theme-color 'selected)))))
                          (etaf-on-updated (lambda () (ths--pin-window-top buffer)))
                          (etaf-on-unmounted (lambda () (when (buffer-live-p buffer)
                                                          (with-current-buffer buffer (ths--stop)))))
@@ -896,9 +928,9 @@ NAME is optional display metadata selected from stock search suggestions."
                                            (floor (/ (float (car viewport))
                                                      (plist-get metrics :char-width)))
                                            (or (cdr viewport) (window-body-height) 40)))))
-                       :styles ((".ranking-row" :bgcolor "#111c2e")
-                                (".ranking-row-alt" :bgcolor "#17243a")
-                                (".ranking-row:focus" :bgcolor "#263d60")))
+                       :styles ((".ranking-row" :bgcolor (etaf-theme-token :ths-panel))
+                                (".ranking-row-alt" :bgcolor (etaf-theme-token :ths-alternate))
+                                (".ranking-row:focus" :bgcolor (etaf-theme-token :ths-selected))))
 
 (defun ths-next-stock (&optional backwards)
   "Select the next visible stock, or previous if BACKWARDS is non-nil."
@@ -939,7 +971,7 @@ NAME is optional display metadata selected from stock search suggestions."
                    ("1" . ths-intraday) ("2" . ths-daily) ("g" . ths-refit)
                    ("0" . ths-show-quotes) ("3" . ths-show-ranking)
                    ("n" . ths-next-page) ("p" . ths-previous-page)
-                   ("r" . ths-refresh) ("q" . quit-window)))
+                   ("r" . ths-refresh) ("T" . ths-toggle-theme) ("q" . quit-window)))
   (define-key ths-mode-map (kbd (car binding)) (cdr binding)))
 
 (define-minor-mode ths-mode
@@ -959,8 +991,7 @@ NAME is optional display metadata selected from stock search suggestions."
 		ths--rankings (make-hash-table :test #'equal))
           (let ((state (etaf-ref (ths--initial-state favorites))))
             (setq-local truncate-lines t)
-            (setq-local buffer-face-mode-face '(:foreground "#dce5f4" :background "#0b1423"))
-            (buffer-face-mode 1)
+            (ths--apply-buffer-theme)
             (etaf-mount buffer (etaf-view (ths-dashboard :state state)))
             (setq-local ths--state state)
             (setq ths--session (list 'ths-session) ths--requests (make-hash-table :test #'equal))

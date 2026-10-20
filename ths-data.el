@@ -29,7 +29,7 @@
   :type 'string :group 'ths)
 (defcustom ths-data-symbols
   '("sz300033" "sz300750" "sh600519" "sz002594" "sh601318" "sh600036" "sh688981" "sz300059")
-  "Stock symbols to show.  Include sh, sz or bj market prefix."
+  "Stock and exchange-traded fund symbols to show, with market prefixes."
   :type '(repeat string) :group 'ths)
 (defconst ths-data-index-symbols '("sh000001" "sz399001" "sz399006"))
 (defconst ths-data-trades-count 12 "Maximum recent trade records per stock.")
@@ -51,12 +51,41 @@
       (error "股票代码须含市场前缀，例如 sz300033: %s" symbol))
     value))
 
+(defun ths-data-fund-market (code)
+  "Return the market prefix for an ETF/LOF trading CODE, or nil.
+This recognizes code ranges, not whether an individual fund is listed."
+  (when (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
+    (cond ((string-match-p "\\`\\(?:50[12]\\|5[1268][0-9]\\)" code) "sh")
+          ((string-match-p "\\`1[56]" code) "sz"))))
+
+(defun ths-data-fund-p (stock)
+  "Return non-nil when STOCK has an ETF/LOF trading symbol."
+  (let ((symbol (plist-get stock :symbol)))
+    (and (stringp symbol) (= (length symbol) 8)
+         (equal (substring symbol 0 2)
+                (ths-data-fund-market (substring symbol 2))))))
+
+(defun ths-data-format-price (stock value &optional signed)
+  "Format VALUE for STOCK, using three decimals for funds.
+SIGNED includes a sign for price changes.  Missing values stay unavailable."
+  (if (numberp value)
+      (format (if (ths-data-fund-p stock)
+                  (if signed "%+.3f" "%.3f")
+                (if signed "%+.2f" "%.2f"))
+              value)
+    "--"))
+
 (defun ths-data-placeholder (symbol)
   "Return metadata for SYMBOL with no invented quote values."
   (setq symbol (ths-data-symbol symbol))
-  (let ((meta (assoc symbol ths-data--metadata)))
+  (let ((meta (assoc symbol ths-data--metadata))
+        (fund (ths-data-fund-p (list :symbol symbol))))
     (list :symbol symbol :code (substring symbol 2)
-          :name (or (nth 1 meta) (substring symbol 2)) :sector (or (nth 2 meta) "--"))))
+          :name (or (nth 1 meta) (substring symbol 2))
+          :sector (or (nth 2 meta) (if fund "场内基金" "--"))
+          :market-label (if fund (if (string-prefix-p "sh" symbol) "沪基" "深基")
+                          (pcase (substring symbol 0 2)
+                            ("sh" "沪A") ("sz" "深A") (_ "京A"))))))
 
 (defun ths-data-change (stock)
   "Return percentage change for STOCK, or nil if unavailable."
@@ -621,27 +650,39 @@ server sorting, independently of `ths-data-symbols'."
           (url-hexify-string (string-trim query))))
 
 (defun ths-data--search-parse (text)
-  "Parse public code-table TEXT, returning only mainland A-share candidates."
+  "Parse code-table TEXT for mainland stocks and exchange-traded funds."
   (let* ((json (ths-data--json text)) (rows (ths-data--get json "result")) result)
     (unless (and (assq 'result json) (listp rows))
       (error "股票搜索响应缺少结果列表"))
     (dolist (row rows)
       (let* ((market (ths-data--get row "securityTypeName"))
-             (prefix (cdr (assoc market '(("沪A" . "sh") ("深A" . "sz") ("京A" . "bj"))))))
+             (code (ths-data--get row "code"))
+             (fund-market (ths-data-fund-market code))
+             (prefix
+              (or (cdr (assoc market '(("沪A" . "sh") ("深A" . "sz") ("京A" . "bj"))))
+                  (and fund-market
+                       (or (and (member market '("沪基" "沪基金" "沪市基金"))
+                                (equal fund-market "sh"))
+                           (and (member market '("深基" "深基金" "深市基金"))
+                                (equal fund-market "sz"))
+                           (member market '("基金" "场内基金" "ETF" "LOF" "ETF基金" "LOF基金")))
+                       fund-market))))
         (when prefix
-          (let ((code (ths-data--get row "code")) (name (ths-data--get row "shortName"))
+          (let ((name (ths-data--get row "shortName"))
                 (pinyin (ths-data--get row "pinyin")))
             (unless (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code)
                          (stringp name) (not (string-empty-p name))
                          (not (string-match-p "[\n\r\t]" name)))
               (error "股票搜索结果包含无效代码或名称"))
             (unless (seq-find (lambda (stock) (equal (plist-get stock :symbol) (concat prefix code))) result)
-              (push (list :symbol (concat prefix code) :code code :name name
-                          :market-label market :pinyin (if (stringp pinyin) pinyin "")) result))))))
+              (let ((stock (ths-data-placeholder (concat prefix code))))
+                (setq stock (plist-put stock :name name))
+                (setq stock (plist-put stock :pinyin (if (stringp pinyin) pinyin "")))
+                (push stock result)))))))
     (nreverse result)))
 
 (defun ths-data-search (query callback)
-  "Search stocks by QUERY.  CALLBACK receives candidates and an error.
+  "Search stocks and listed funds by QUERY; CALLBACK receives rows and error.
 Return a cancellation function.  The endpoint requires no account or API key."
   (ths-data--http
    (ths-data--search-url query) 'eastmoney

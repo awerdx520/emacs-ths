@@ -5,6 +5,9 @@
 (ert-deftest ths-watchlist-normalizes-stock-input-and-rejects-invalid-input ()
   (dolist (pair '(("600519" . "sh600519") ("000001" . "sz000001")
                   ("300033" . "sz300033") ("920001" . "bj920001")
+                  ("510300" . "sh510300") ("159915" . "sz159915")
+                  ("501018" . "sh501018") ("161725" . "sz161725")
+                  ("  SH588000 " . "sh588000")
                   ("  SZ000001 " . "sz000001")))
     (should (equal (cdr pair) (ths-watchlist-symbol (car pair)))))
   (dolist (input '("" "123" "600519,000001" "贵州茅台" "sh000001" "sz399001" "xx300033"))
@@ -88,5 +91,26 @@
             (should-error (ths-watchlist-save '("sz000001")) :type 'user-error))
           (should-not (directory-files directory nil "\\`\\.ths-watchlist-")))
       (delete-directory directory t))))
+
+(ert-deftest ths-watchlist-funds-persist-and-trigger-quote-chart-trade-requests ()
+  (let ((ths-watchlist-file (make-temp-file "ths-fund-watchlist-")))
+    (unwind-protect
+        (progn
+          (ths-watchlist-save '("sh510300" "sz159915" "sh501018" "sz161725"))
+          (should (equal (ths-watchlist-load) '("sh510300" "sz159915" "sh501018" "sz161725")))
+          (ths-test-empty-dashboard
+            (let ((ths-auto-fetch t) calls)
+              (cl-letf (((symbol-function 'ths-data-fetch)
+                         (lambda (symbol kind _cb)
+                           (push (cons symbol kind) calls) #'ignore)))
+                (ths-add-favorite "159915" "创业板ETF")
+                (ths-test-press 'daily)
+                (dolist (kind '(quote intraday daily trades))
+                  (should (member (cons "sz159915" kind) calls)))
+                (should (ths-data-fund-p (ths-data-find "159915")))
+                (should (ths-test-visible "场内基金"))
+                (ths-remove-favorite)
+                (should-not (member "sz159915" (ths-watchlist-load)))))))
+      (delete-file ths-watchlist-file))))
 
 ;;; ths-watchlist-tests.el ends here
