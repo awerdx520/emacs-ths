@@ -720,7 +720,7 @@ NAME is optional display metadata selected from stock search suggestions."
          (index (or (cl-position (plist-get state :selected) stocks
                                  :key (lambda (stock) (ths-data-id stock)) :test #'equal) 0))
          (page (/ index capacity))
-         (row-height (if ths--roomy 2 1))
+         (row-height (if ths--roomy 3 1))
          (visible (seq-subseq stocks (* page capacity) (min (length stocks) (* (1+ page) capacity))))
          (free (- ths--panel-rows (ths--panel-overhead) 3 (* row-height (length visible))
                   (if stocks 0 1))))
@@ -747,7 +747,10 @@ NAME is optional display metadata selected from stock search suggestions."
                                (ths--number (ths-data-change stock) "%+.2f%%"))))
            (etaf-node 'box
                       (list :ref (intern (concat "stock-" code)) :key code
-                            :role 'button :tab-index 0 :height (list 'lh row-height) :overflow 'hidden :padding '((lh 0) (ch 0))
+                            :role 'button :tab-index 0 :height (list 'lh row-height) :overflow 'hidden
+                            ;; Vertical layout uses whole text rows.  Explicit,
+                            ;; symmetric padding centers the single-line label.
+                            :padding (list (list 'lh (if ths--roomy 1 0)) '(ch 0))
                             :on-press (lambda () (ths--set ref :selected code) (ths--set ref :section 'detail))
                             :bgcolor (if selected (ths-theme-color 'selected) (ths-theme-color 'panel))
                             :hover-style (list :background-color (ths-theme-color 'row-hover))
@@ -1067,7 +1070,7 @@ NAME is optional display metadata selected from stock search suggestions."
          (wide (>= columns 136))
          (section (or (plist-get state :section) 'detail)))
     (setq ths--stock-page-size
-          (max 1 (/ (- ths--panel-rows (ths--panel-overhead) 3) (if ths--roomy 2 1))))
+          (max 1 (/ (- ths--panel-rows (ths--panel-overhead) 3) (if ths--roomy 3 1))))
     (cond
      ((or (< columns 44) (< rows 20))
       (etaf-node 'column (list :height (list 'lh height) :overflow 'hidden)
