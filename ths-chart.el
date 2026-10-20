@@ -294,5 +294,54 @@ Sum volumes that fall in the same terminal column, retaining its last color."
                (ths-chart--volume-bars candles (number-sequence 0 (* 2 (1- (length candles))) 2) t)
                (* 2 (length candles)) volume-rows heading)))))
 
+(defun ths-chart-nav-rows (stock accumulated)
+  "Return STOCK's available NAV rows for ACCUMULATED or unit values."
+  (seq-filter (lambda (row) (numberp (plist-get row (if accumulated :acc-nav :nav))))
+              (plist-get stock :nav-history)))
+
+(defun ths-chart-nav (stock accumulated width height &optional svg)
+  "Draw published values for STOCK within WIDTH and HEIGHT, optionally as SVG.
+ACCUMULATED chooses cumulative NAV (seven-day yield for money funds).
+The x axis contains published dates, without invented intraday/volume data."
+  (let* ((rows (ths-chart-nav-rows stock accumulated))
+         (values (mapcar (lambda (row) (plist-get row (if accumulated :acc-nav :nav))) rows)))
+    (if (null values) "暂无净值数据"
+      (let* ((low (apply #'min values)) (high (apply #'max values))
+             (pad (max 0.0001 (* 0.04 (- high low))))
+             (low (- low pad)) (high (+ high pad))
+             (width (max 2 width)) (height (max 2 height))
+             (n (length values)))
+        (if svg
+            (concat
+             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"720\" height=\"340\" viewBox=\"0 0 720 340\" preserveAspectRatio=\"none\">"
+             (format "<rect width=\"720\" height=\"340\" fill=\"%s\"/>" (ths-theme-color 'panel))
+             (mapconcat
+              (lambda (i)
+                (format "<path d=\"M80 %d H700\" stroke=\"%s\"/><text x=\"72\" y=\"%d\" text-anchor=\"end\" fill=\"%s\" font-size=\"13\">%.4f</text>"
+                        (+ 20 (* i 65)) (ths-theme-color 'grid) (+ 25 (* i 65))
+                        (ths-theme-color 'muted) (- high (* (/ i 4.0) (- high low)))))
+              '(0 1 2 3 4) "")
+             (format "<polyline fill=\"none\" stroke=\"%s\" stroke-width=\"2\" points=\"%s\"/>"
+                     (ths-theme-color 'line)
+                     (mapconcat
+                      #'identity
+                      (cl-loop for value in values for i from 0
+                               collect (format "%.2f,%.2f" (+ 80 (* 620.0 (/ (float i) (max 1 (1- n)))))
+                                               (+ 20 (* 260 (/ (- high value) (- high low)))))) " "))
+             (when (= n 1)
+               (format "<circle cx=\"80\" cy=\"150\" r=\"3\" fill=\"%s\"/>" (ths-theme-color 'line)))
+             (format "<g fill=\"%s\" font-size=\"14\"><text x=\"80\" y=\"320\">%s</text><text x=\"700\" y=\"320\" text-anchor=\"end\">%s</text></g></svg>"
+                     (ths-theme-color 'muted) (plist-get (car rows) :date) (plist-get (car (last rows)) :date)))
+          (let ((grid (vconcat (cl-loop repeat height collect (make-vector width " ")))))
+            (dotimes (x (if (= n 1) 1 width))
+              (let* ((position (* (/ (float x) (1- width)) (1- n)))
+                     (i (floor position)) (fraction (- position i))
+                     (value (+ (* (- 1 fraction) (nth i values))
+                               (* fraction (nth (min (1- n) (1+ i)) values)))))
+                (aset (aref grid (max 0 (min (1- height)
+                                           (round (* (1- height) (/ (- high value) (- high low))))))) x
+                      (propertize "●" 'face `(:foreground ,(ths-theme-color 'line))))))
+            (ths-chart--render grid low high stock)))))))
+
 (provide 'ths-chart)
 ;;; ths-chart.el ends here

@@ -49,8 +49,8 @@
     (let ((rows (cl-loop for i from 1 to 20 collect
                         (list :symbol (format "sz%06d" i) :code (format "%06d" i)
                               :name (format "股票%d" i) :rank i :price 10 :change 1 :volume 100))))
-      (puthash '(change . 1) (list :total 21 :rows rows) ths--rankings)
-      (puthash '(change . 2) (list :total 21 :rows (list (list :symbol "sz000021" :code "000021" :name "股票21" :rank 21))) ths--rankings)
+      (puthash '(stock change 1) (list :total 21 :rows rows) ths--rankings)
+      (puthash '(stock change 2) (list :total 21 :rows (list (list :symbol "sz000021" :code "000021" :name "股票21" :rank 21))) ths--rankings)
       (etaf-runtime-refit (etaf-runtime-for-buffer buffer) 80 24)
       (ths-show-ranking)
       (dolist (row (seq-take rows (ths--ranking-capacity)))
@@ -116,7 +116,7 @@
                   (should (member '(:background "#dbeafe") face)))
                 (should (equal selected (plist-get (etaf-value ths--state) :selected)))
                 (should (equal stocks ths-data-stocks))
-                (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
+                (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
                 (ths-show-ranking)
                 (etaf-focus runtime 'rank-sh600000)
                 (let ((face (get-text-property (etaf-host-ref-position runtime 'rank-sh600000) 'face)))
@@ -131,7 +131,7 @@
 (ert-deftest ths-light-theme-fits-both-pages-and-keeps-switch-on-second-row ()
   (let ((ths-theme 'light))
     (ths-test-with-dashboard
-      (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
+      (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
       (dolist (size '((160 . 60) (80 . 24) (44 . 20)))
         (etaf-runtime-refit (etaf-runtime-for-buffer buffer) (car size) (cdr size))
         (dolist (page '(quotes ranking))

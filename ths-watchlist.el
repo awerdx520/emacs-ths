@@ -18,9 +18,9 @@
                                ((or ?4 ?8 ?9) "bj")
                                (_ (user-error "无法识别市场，请输入 sh、sz 或 bj 前缀"))))
                          value)))
-    (unless (and (string-match-p "\\`\\(?:sh\\|sz\\|bj\\)[0-9]\\{6\\}\\'" value)
+    (unless (and (string-match-p "\\`\\(?:sh\\|sz\\|bj\\|of\\)[0-9]\\{6\\}\\'" value)
                  (not (member value ths-data-index-symbols)))
-      (user-error "请输入股票或场内基金交易代码，例如 600519、510300 或 sz159915"))
+      (user-error "请输入股票／基金代码；场外基金使用 of 前缀，例如 of005827"))
     value))
 
 (defun ths-watchlist-load ()

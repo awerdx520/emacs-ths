@@ -3,7 +3,7 @@
 ;; Run with make live-check.  Requires network; excluded from make check.
 ;;; Code:
 (require 'ths-data)
-(let ((pending 11) (failed nil) cancels)
+(let ((pending 15) (failed nil) cancels)
   (unwind-protect
       (progn
         (push (ths-data-search
@@ -37,18 +37,20 @@
                                           ('daily (format "%d candles, last %s" (length (plist-get result :candles))
                                                           (plist-get (car (last (plist-get result :candles))) :date)))))))))
                   cancels)))
-        (dolist (sort '(change amount))
-          (let ((metric sort))
+        (dolist (universe '(stock etf lof))
+         (dolist (sort '(change amount))
+          (let ((metric sort) (category universe))
             (push (ths-data-fetch-ranking
                    metric 1
                    (lambda (result failure)
                      (cl-decf pending)
                      (when failure (setq failed t))
-                     (princ (format "%s / ranking-%s: %s\n" (plist-get result :source) metric
-                                    (or failure (format "%d rows / %d stocks"
+                     (princ (format "%s / ranking-%s-%s: %s\n" (plist-get result :source) category metric
+                                    (or failure (format "%d rows / %d securities"
                                                         (length (plist-get result :rows))
-                                                        (plist-get result :total)))))))
-                  cancels)))
+                                                        (plist-get result :total))))))
+                   category)
+                  cancels))))
         (let ((deadline (+ (float-time) (* 4 ths-data-timeout) 5)))
           (while (and (> pending 0) (< (float-time) deadline))
             (accept-process-output nil 0.1)))

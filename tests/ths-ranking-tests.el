@@ -84,7 +84,7 @@
 
 (ert-deftest ths-ranking-sina-source-is-shown-and-preserved-when-opening-stock ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-data--ranking-sina-parse ths-rank-test-sina-response 'change 1 2) ths--rankings)
+    (puthash '(stock change 1) (ths-data--ranking-sina-parse ths-rank-test-sina-response 'change 1 2) ths--rankings)
     (ths-show-ranking)
     (should (ths-test-visible "新浪财经"))
     (should (ths-test-visible "60日涨跌幅暂缺"))
@@ -140,7 +140,7 @@
 
 (ert-deftest ths-ranking-shortcut-buttons-retain-stock-across-toolbar-focus ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
+    (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
     (ths-show-ranking)
     (let* ((runtime (etaf-runtime-for-buffer buffer))
            (rows (plist-get (ths--ranking-data (etaf-value ths--state)) :rows))
@@ -158,10 +158,10 @@
 (ert-deftest ths-ranking-page-switches-metric-and-retains-quote-selection ()
   (ths-test-with-dashboard
     (ths--set ths--state :selected "688981")
-    (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
+    (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
     (let ((amount (ths-rank-test-data 'amount)))
       (setq amount (plist-put amount :rows (reverse (plist-get amount :rows))))
-      (puthash '(amount . 1) amount ths--rankings))
+      (puthash '(stock amount 1) amount ths--rankings))
     (ths-test-press 'page-ranking)
     (should (ths-test-visible "下一只 j"))
     (should-not (ths-test-visible "同花顺  /  THS"))
@@ -184,7 +184,7 @@
 
 (ert-deftest ths-ranking-rows-open-the-correct-stock-and-clear-filters ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
+    (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
     (ths--set ths--state :query "半导体")
     (ths--set ths--state :tab 'favorites)
     (ths-show-ranking)
@@ -204,8 +204,8 @@
 
 (ert-deftest ths-ranking-pagination-resets-on-metric-and-stops-at-edges ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (plist-put (ths-rank-test-data) :total 21) ths--rankings)
-    (puthash '(change . 2) '(:total 21 :rows nil) ths--rankings)
+    (puthash '(stock change 1) (plist-put (ths-rank-test-data) :total 21) ths--rankings)
+    (puthash '(stock change 2) '(:total 21 :rows nil) ths--rankings)
     (ths-show-ranking)
     (ths-test-press 'rank-prev)
     (should (= 1 (plist-get (etaf-value ths--state) :ranking-page)))
@@ -222,7 +222,7 @@
   (ths-test-with-dashboard
     (let (calls callbacks)
       (cl-letf (((symbol-function 'ths-data-fetch-ranking)
-                 (lambda (sort page cb) (push (cons sort page) calls) (push (cons sort cb) callbacks) #'ignore))
+                 (lambda (sort page cb &optional _universe) (push (cons sort page) calls) (push (cons sort cb) callbacks) #'ignore))
                 ((symbol-function 'ths-data-fetch) (lambda (&rest _) (ert-fail "Ranking refresh fetched individual quotes"))))
         (ths-show-ranking)
         (ths-refresh)
@@ -245,7 +245,7 @@
   (ths-test-with-dashboard
     (let (callback cancelled)
       (cl-letf (((symbol-function 'ths-data-fetch-ranking)
-                 (lambda (_sort _page cb) (setq callback cb) (lambda () (setq cancelled t)))))
+                 (lambda (_sort _page cb &optional _universe) (setq callback cb) (lambda () (setq cancelled t)))))
         (ths-show-ranking)
         (ths-refresh)
         (etaf-unmount (etaf-runtime-for-buffer buffer))
@@ -256,7 +256,7 @@
 
 (ert-deftest ths-ranking-layout-keeps-fixed-table-columns-at-different-widths ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
+    (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
     (ths-show-ranking)
     (let ((runtime (etaf-runtime-for-buffer buffer)))
       (dolist (width '(44 80 90 110 112 133 150))
@@ -325,7 +325,7 @@
       (ths-data-fetch-ranking 'amount 1 (lambda (data err) (setq result data failure err)))
       (should (= 2 calls))
       (should-not result)
-      (should (string-match-p "非 A 股" failure)))))
+      (should (string-match-p "不属于当前类别" failure)))))
 
 (ert-deftest ths-ranking-cancellation-owns-retry-and-ignores-late-response ()
   (let (retry-callback cancelled (calls 0) completed)
@@ -345,8 +345,8 @@
 
 (ert-deftest ths-ranking-old-mixed-cache-is-cleared-even-after-refresh-failure ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
-    (puthash '(amount . 1)
+    (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
+    (puthash '(stock amount 1)
              (list :total 3 :fetched-at (float-time)
                    :rows '((:symbol "sh000001" :code "000001" :name "上证指数" :rank 1)
                            (:symbol "sh510300" :code "510300" :name "沪深300ETF" :rank 2)
@@ -356,7 +356,7 @@
     (should-not (ths-test-visible "沪深300ETF"))
     (should-not (plist-get (ths--ranking-data (etaf-value ths--state)) :total))
     (cl-letf (((symbol-function 'ths-data-fetch-ranking)
-               (lambda (_sort _page cb) (funcall cb nil "network down") #'ignore)))
+               (lambda (_sort _page cb &optional _universe) (funcall cb nil "network down") #'ignore)))
       (ths-refresh))
     (should-not (ths-test-visible "沪深300ETF"))
     (should (ths-test-visible "获取失败"))
@@ -386,7 +386,7 @@
   (ths-test-with-dashboard
     (let (callbacks)
       (cl-letf (((symbol-function 'ths-data-fetch-ranking)
-                 (lambda (sort _page cb) (push (cons sort cb) callbacks) #'ignore)))
+                 (lambda (sort _page cb &optional _universe) (push (cons sort cb) callbacks) #'ignore)))
         (ths-show-ranking)
         (ths-refresh)
         (ths-test-press 'rank-amount)
@@ -404,8 +404,8 @@
 (ert-deftest ths-ranking-amount-stays-visible-at-all-supported-widths-and-pages ()
   (ths-test-with-dashboard
     (let ((data (ths-data--ranking-parse ths-rank-test-amount-response 'amount 1)))
-      (puthash '(amount . 1) (plist-put data :total 21) ths--rankings)
-      (puthash '(amount . 2) '(:total 21 :rows nil) ths--rankings)
+      (puthash '(stock amount 1) (plist-put data :total 21) ths--rankings)
+      (puthash '(stock amount 2) '(:total 21 :rows nil) ths--rankings)
       (ths-show-ranking)
       (ths-test-press 'rank-amount)
       (dolist (width '(44 54 55 79 80 90 112 133 160))
@@ -425,7 +425,7 @@
       (should (= 0 (plist-get (etaf-value ths--state) :ranking-offset))))))
 (ert-deftest ths-ranking-jk-focuses-highlighted-rows-and-return-opens-stock ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-rank-test-data) ths--rankings)
+    (puthash '(stock change 1) (ths-rank-test-data) ths--rankings)
     (ths-show-ranking)
     (let ((selected (plist-get (etaf-value ths--state) :selected))
           (runtime (etaf-runtime-for-buffer buffer)))
@@ -455,8 +455,8 @@
 
 (ert-deftest ths-ranking-jk-crosses-visible-segments-and-server-pages-without-scroll ()
   (ths-test-with-dashboard
-    (puthash '(amount . 1) (ths-rank-test-keyboard-page 1) ths--rankings)
-    (puthash '(amount . 2) (ths-rank-test-keyboard-page 2) ths--rankings)
+    (puthash '(stock amount 1) (ths-rank-test-keyboard-page 1) ths--rankings)
+    (puthash '(stock amount 2) (ths-rank-test-keyboard-page 2) ths--rankings)
     (etaf-runtime-refit (etaf-runtime-for-buffer buffer) 80 24)
     (ths--ranking-select ths--state 'amount)
     (let ((runtime (etaf-runtime-for-buffer buffer)))
@@ -477,12 +477,12 @@
 
 (ert-deftest ths-ranking-jk-focuses-new-page-after-async-fetch ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-rank-test-keyboard-page 1) ths--rankings)
+    (puthash '(stock change 1) (ths-rank-test-keyboard-page 1) ths--rankings)
     (ths-show-ranking)
     (etaf-focus (etaf-runtime-for-buffer buffer) 'rank-sz000020)
     (let ((ths-auto-fetch t) callback (calls 0))
       (cl-letf (((symbol-function 'ths-data-fetch-ranking)
-                 (lambda (sort page cb)
+                 (lambda (sort page cb &optional _universe)
                    (should (eq sort 'change)) (should (= page 2))
                    (cl-incf calls) (setq callback cb) #'ignore)))
         (ths-next-stock)
@@ -495,13 +495,13 @@
 
 (ert-deftest ths-ranking-jk-late-page-cannot-steal-focus-after-switching-metric ()
   (ths-test-with-dashboard
-    (puthash '(change . 1) (ths-rank-test-keyboard-page 1) ths--rankings)
-    (puthash '(amount . 1) (ths-data--ranking-parse ths-rank-test-amount-response 'amount 1) ths--rankings)
+    (puthash '(stock change 1) (ths-rank-test-keyboard-page 1) ths--rankings)
+    (puthash '(stock amount 1) (ths-data--ranking-parse ths-rank-test-amount-response 'amount 1) ths--rankings)
     (ths-show-ranking)
     (etaf-focus (etaf-runtime-for-buffer buffer) 'rank-sz000020)
     (let ((ths-auto-fetch t) callback)
       (cl-letf (((symbol-function 'ths-data-fetch-ranking)
-                 (lambda (_sort _page cb) (setq callback cb) #'ignore)))
+                 (lambda (_sort _page cb &optional _universe) (setq callback cb) #'ignore)))
         (ths-next-stock)
         (ths-test-press 'rank-amount)
         (ths-next-stock)
@@ -517,12 +517,12 @@
       (ths-next-stock)
       (ths-previous-stock)
       (should (equal selected (plist-get (etaf-value ths--state) :selected)))
-      (puthash '(change . 1) (ths-rank-test-keyboard-page 1) ths--rankings)
+      (puthash '(stock change 1) (ths-rank-test-keyboard-page 1) ths--rankings)
       (ths--publish)
       (etaf-focus (etaf-runtime-for-buffer buffer) 'rank-sz000020)
       (let ((ths-auto-fetch t))
         (cl-letf (((symbol-function 'ths-data-fetch-ranking)
-                   (lambda (_sort _page cb) (funcall cb nil "offline") #'ignore)))
+                   (lambda (_sort _page cb &optional _universe) (funcall cb nil "offline") #'ignore)))
           (ths-next-stock)))
       (should-not ths--ranking-pending-focus)
       (ths-next-stock)

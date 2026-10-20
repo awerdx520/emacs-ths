@@ -99,7 +99,7 @@
   (when (and (ths-search--session-active session) (= generation (ths-search--session-generation session)))
     (let ((cancel
            (ths-data-search
-            (if (string-match "\\`\\(?:sh\\|sz\\|bj\\)\\([0-9]+\\)\\'" query) (match-string 1 query) query)
+            (if (string-match "\\`\\(?:sh\\|sz\\|bj\\|of\\)\\([0-9]+\\)\\'" query) (match-string 1 query) query)
             (lambda (rows failure)
               (when (and (ths-search--session-active session) (= generation (ths-search--session-generation session)))
                 (setf (ths-search--session-cancel session) nil)
@@ -107,7 +107,7 @@
                 (setf (ths-search--session-status session)
                       (cond (failure "在线搜索失败；可选本地结果或输入完整代码")
                             ((ths-search--session-rows session) "↑↓ 选择候选，RET 添加；C-g 取消")
-                            (t "没有匹配的 A 股，请换个关键词")))
+                            (t "没有匹配的股票或基金，请换个关键词")))
                 (ths-search--notify session))))))
       ;; Cancellation is harmless for an already completed HTTP request.
       (when (and (ths-search--session-active session) (= generation (ths-search--session-generation session)))
@@ -122,7 +122,7 @@
     (setf (ths-search--session-query session) query)
     (ths-search--set-rows session (ths-search--local session query))
     (setf (ths-search--session-status session)
-          (if (string-empty-p query) "输入股票／场内基金代码或名称；TAB 选择候选" "搜索中…"))
+          (if (string-empty-p query) "输入股票／基金代码或名称；TAB 选择候选" "搜索中…"))
     (unless (string-empty-p query)
       (setf (ths-search--session-timer session)
             (run-with-idle-timer 0.3 nil #'ths-search--request session query (ths-search--session-generation session))))

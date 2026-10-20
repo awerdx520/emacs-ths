@@ -57,7 +57,7 @@
 
 (defun ths--source (source)
   "Return a readable provider name for SOURCE."
-  (pcase source ('tencent "腾讯财经") ('eastmoney "东方财富") ('sina "新浪财经") (_ "等待数据")))
+  (pcase source ('tencent "腾讯财经") ('eastmoney "东方财富") ('sina "新浪财经") ('fund "天天基金") (_ "等待数据")))
 
 (defun ths--stop ()
   "Cancel this dashboard's timer and pending requests."
@@ -142,20 +142,26 @@
     (let* ((state (etaf-value ths--state))
            (stock (ths-data-find (plist-get state :selected))))
       (when stock
-        (dolist (kind (list (plist-get state :chart) 'trades))
+        (dolist (kind (if (ths-data-otc-p stock) '(quote)
+                        (list (plist-get state :chart) 'trades)))
           (let ((stamp (plist-get stock (intern (format ":%s-fetched-at" kind)))))
-            (when (or force (not stamp) (> (- (float-time) stamp) (or ths-refresh-interval 30)))
+            (when (or force (not stamp) (> (- (float-time) stamp) (if (ths-data-otc-p stock) 900 (or ths-refresh-interval 30))))
               (ths--fetch (plist-get stock :symbol) kind))))))))
 
-(defun ths-refresh ()
-  "Refresh quotes, indices, the selected chart and recent trades asynchronously."
+(defun ths-refresh (&optional automatic)
+  "Refresh market data asynchronously.
+AUTOMATIC limits published fund updates to once every fifteen minutes."
   (interactive)
   (when (and ths--session (etaf-runtime-for-buffer (current-buffer)))
     (if (eq (plist-get (etaf-value ths--state) :page) 'ranking)
         (ths--ranking-fetch t)
       (dolist (stock (append ths-data-stocks ths-data-indices))
-        (ths--fetch (plist-get stock :symbol) 'quote))
-      (let ((ths-auto-fetch t)) (ths--ensure-chart t)))
+        (unless (and automatic (ths-data-otc-p stock)
+                     (plist-get stock :quote-fetched-at)
+                     (< (- (float-time) (plist-get stock :quote-fetched-at)) 900))
+          (ths--fetch (plist-get stock :symbol) 'quote)))
+      (unless (ths-data-otc-p (ths-data-find (plist-get (etaf-value ths--state) :selected)))
+        (let ((ths-auto-fetch t)) (ths--ensure-chart (not automatic)))))
     (ths--publish)))
 
 (defun ths--feed-status ()
@@ -168,14 +174,17 @@
           ((cl-some (lambda (s) (plist-get s :quote-fetched-at)) items) "真实行情 · 时间见各报价")
           (t "等待行情 · r 刷新"))))
 
-(defvar-local ths--rankings nil "Ranking snapshots keyed by sort and page.")
+(defvar-local ths--rankings nil "Ranking snapshots keyed by universe, sort and page.")
+(defvar-local ths--ranking-positions nil
+  "Saved page, offset and selected symbol for each universe and sort.")
 
 (defun ths--ranking-key (state)
   "Return the ranking cache key for STATE."
-  (cons (plist-get state :ranking-sort) (plist-get state :ranking-page)))
+  (list (ths-data-ranking-universe (plist-get state :ranking-universe))
+        (plist-get state :ranking-sort) (plist-get state :ranking-page)))
 
 (defun ths--ranking-data (state)
-  "Return the cached ranking for STATE, discarding old non-stock snapshots."
+  "Return the cached ranking for STATE, rejecting mixed-universe snapshots."
   (when ths--rankings
     (let* ((key (ths--ranking-key state)) (data (gethash key ths--rankings)))
       (when (seq-some
@@ -185,9 +194,11 @@
                                     ((or (string-prefix-p "sz" (or symbol ""))
                                          (string-prefix-p "bj" (or symbol ""))) 0))))
                  (not (and symbol
-                           (equal symbol (ths-data--ranking-stock-symbol (plist-get row :code) market))))))
+                           (equal symbol (ths-data--ranking-symbol
+                                          (plist-get row :code) market
+                                          (plist-get state :ranking-universe)))))))
              (plist-get data :rows))
-        (setq data '(:error "旧榜单混入非 A 股，已清除；按 r 重新获取"))
+        (setq data '(:error "旧榜单混入其他类别证券，已清除；按 r 重新获取"))
         (puthash key data ths--rankings))
       data)))
 
@@ -204,7 +215,7 @@
         (puthash request-key t ths--requests)
         (let ((cancel
                (ths-data-fetch-ranking
-                (car key) (cdr key)
+                (plist-get state :ranking-sort) (plist-get state :ranking-page)
                 (lambda (result failure)
                   (when (buffer-live-p buffer)
                     (with-current-buffer buffer
@@ -217,7 +228,8 @@
                                    (equal key (car ths--ranking-pending-focus)))
                           (setq ths--ranking-pending-focus nil))
                         (ths--publish)
-                        (ths--ranking-restore-focus))))))))
+                        (ths--ranking-restore-focus)))))
+                (plist-get state :ranking-universe))))
           (when (gethash request-key ths--requests) (puthash request-key cancel ths--requests)))
         (ths--publish)))))
 
@@ -225,8 +237,11 @@
   "Display ranking SORT at PAGE using REF, optionally focusing FOCUS-EDGE."
   ;; Migrate an old session when reopening the removed volume ranking.
   (when (eq sort 'volume) (setq sort 'amount page 1))
+  (ths--ranking-save-position)
   (setq ths--ranking-pending-focus
-        (when focus-edge (cons (cons sort (or page 1)) focus-edge)))
+        (when focus-edge
+          (cons (list (ths-data-ranking-universe (plist-get (etaf-value ref) :ranking-universe))
+                      sort (or page 1)) focus-edge)))
   (etaf-update-value
    ref (lambda (old)
          (let ((next (copy-sequence old)))
@@ -237,27 +252,110 @@
   (when ths-auto-fetch (ths--ranking-fetch))
   (ths--ranking-restore-focus))
 
+(defun ths--ranking-save-position ()
+  "Remember the current ranking location before switching view or sort."
+  (when (and ths--state (hash-table-p ths--ranking-positions))
+    (let* ((state (etaf-value ths--state)) (key (ths--ranking-key state))
+           (rows (plist-get (ths--ranking-data state) :rows))
+           (selected (and (equal key (car ths--ranking-toolbar-stock))
+                          (plist-get (cdr ths--ranking-toolbar-stock) :symbol)))
+           (index (cl-position selected rows :test #'equal
+                               :key (lambda (row) (plist-get row :symbol))))
+           (offset (or (plist-get state :ranking-offset) 0)))
+      (when (eq (plist-get state :page) 'ranking)
+        (puthash (seq-take key 2)
+                 (list :page (plist-get state :ranking-page) :offset offset
+                       :symbol (and index (<= offset index)
+                                    (< index (+ offset (ths--ranking-capacity))) selected))
+                 ths--ranking-positions)))))
+
+(defun ths-ranking-set-universe (universe)
+  "Show ranking UNIVERSE, retaining the sort and its previous location."
+  (setq universe (ths-data-ranking-universe universe))
+  (ths--ranking-save-position)
+  (let* ((state (etaf-value ths--state)) (sort (plist-get state :ranking-sort))
+         (saved (and ths--ranking-positions (gethash (list universe sort) ths--ranking-positions)))
+         (page (or (plist-get saved :page) 1))
+         (offset (or (plist-get saved :offset) 0)))
+    (setq ths--ranking-toolbar-stock nil
+          ths--ranking-pending-focus
+          (when saved
+            (cons (list universe sort page) (or (plist-get saved :symbol) 'first))))
+    (etaf-update-value
+     ths--state
+     (lambda (old)
+       (let ((next (copy-sequence old)))
+         (dolist (pair `((:page . ranking) (:ranking-universe . ,universe)
+                        (:ranking-page . ,page) (:ranking-offset . ,offset)))
+           (setq next (plist-put next (car pair) (cdr pair))))
+         next)))
+    (when ths-auto-fetch (ths--ranking-fetch))
+    (ths--ranking-restore-focus t)))
+
+(defun ths-ranking-cycle-universe ()
+  "Cycle between A shares, ETF and LOF rankings, keeping the current sort."
+  (interactive)
+  (let ((universe (plist-get (etaf-value ths--state) :ranking-universe)))
+    (ths-ranking-set-universe (pcase universe ('etf 'lof) ('lof 'stock) (_ 'etf)))))
+
 (defun ths--ranking-focus-row (rows index)
   "Reveal INDEX in ROWS and give its row native keyboard focus."
   (when-let* ((stock (nth index rows)))
-    (let ((offset (* (/ index (ths--ranking-capacity)) (ths--ranking-capacity))))
+    (let ((offset (* (/ index (ths--ranking-capacity)) (ths--ranking-capacity)))
+          (buffer (current-buffer)) (session ths--session)
+          (key (ths--ranking-key (etaf-value ths--state)))
+          (target (intern (concat "rank-" (plist-get stock :symbol)))))
       (unless (equal offset (plist-get (etaf-value ths--state) :ranking-offset))
         (ths--set ths--state :ranking-offset offset))
-      (etaf-focus (etaf-runtime-for-buffer (current-buffer))
-                  (intern (concat "rank-" (plist-get stock :symbol)))))
-    (ths--pin-window-top (current-buffer))))
+      (let ((focus
+             (lambda ()
+               (when (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (let ((runtime (etaf-runtime-for-buffer buffer)))
+                     (when (and runtime (eq session ths--session)
+                                (equal key (ths--ranking-key (etaf-value ths--state)))
+                                (eq 'ranking (plist-get (etaf-value ths--state) :page))
+                                (etaf-host-ref-position runtime target))
+                       (etaf-focus runtime target)
+                       (ths--pin-window-top buffer))))))))
+        ;; Toolbar j/k must restore an existing row before calculating its
+        ;; neighbor.  Only newly revealed rows need to wait for publication.
+        (if (etaf-host-ref-position (etaf-runtime-for-buffer buffer) target)
+            (funcall focus)
+          (etaf-next-tick focus))))))
 
-(defun ths--ranking-restore-focus ()
-  "Apply a pending keyboard page transition only to its active ranking."
+(defun ths--ranking-restore-focus (&optional force)
+  "Restore a pending selection in its active ranking.
+FORCE allows an explicit category click to move focus from its button."
+  (when ths--ranking-pending-focus
+    (let ((buffer (current-buffer)) (session ths--session)
+          (pending ths--ranking-pending-focus))
+      (etaf-next-tick
+       (lambda ()
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (when (and (eq session ths--session)
+                        (eq pending ths--ranking-pending-focus)
+                        (etaf-runtime-for-buffer buffer))
+               (ths--ranking-restore-focus-now force)))))))))
+
+(defun ths--ranking-restore-focus-now (force)
+  "Apply pending ranking focus after the view is published, honoring FORCE."
   (let ((state (etaf-value ths--state)))
     (when (and ths--ranking-pending-focus (eq (plist-get state :page) 'ranking)
                (equal (car ths--ranking-pending-focus) (ths--ranking-key state)))
       (when-let* ((rows (plist-get (ths--ranking-data state) :rows)))
-        (let ((index (if (eq (cdr ths--ranking-pending-focus) 'last) (1- (length rows)) 0)))
+        (let* ((target (cdr ths--ranking-pending-focus))
+               (index (cond ((eq target 'last) (1- (length rows)))
+                            ((stringp target)
+                             (or (cl-position target rows :test #'equal
+                                              :key (lambda (row) (plist-get row :symbol))) 0))
+                            (t (min (or (plist-get state :ranking-offset) 0) (1- (length rows))))))
+               (focused (etaf-focused-host-ref (etaf-runtime-for-buffer (current-buffer)))))
           (setq ths--ranking-pending-focus nil)
           ;; Do not take focus back if the user tabbed to another control
           ;; while this page was loading.
-          (unless (etaf-focused-host-ref (etaf-runtime-for-buffer (current-buffer)))
+          (when (or force (null focused) (memq focused '(rank-stock rank-etf rank-lof shortcut-u)))
             (ths--ranking-focus-row rows index)))))))
 
 (defun ths-ranking-next-stock (&optional backwards)
@@ -286,12 +384,12 @@
 (defun ths-show-ranking ()
   "Show the whole-market ranking page."
   (interactive)
-  (let ((state (etaf-value ths--state)))
-    (ths--ranking-select ths--state (plist-get state :ranking-sort) (plist-get state :ranking-page))))
+  (ths-ranking-set-universe (plist-get (etaf-value ths--state) :ranking-universe)))
 
 (defun ths-show-quotes ()
   "Return to the quote dashboard."
   (interactive)
+  (ths--ranking-save-position)
   (setq ths--ranking-pending-focus nil)
   (ths--set ths--state :page 'quotes)
   (when ths-auto-fetch (ths-refresh)))
@@ -326,10 +424,10 @@
   (interactive)
   (let* ((state (etaf-value ths--state)) (stocks (ths--stocks state))
          (index (or (cl-position (plist-get state :selected) stocks
-                                 :key (lambda (stock) (plist-get stock :code)) :test #'equal) 0))
+                                 :key (lambda (stock) (ths-data-id stock)) :test #'equal) 0))
          (page (+ (/ index ths--stock-page-size) (if backwards -1 1)))
          (stock (nth (* (max 0 page) ths--stock-page-size) stocks)))
-    (when stock (ths--set ths--state :selected (plist-get stock :code)))))
+    (when stock (ths--set ths--state :selected (ths-data-id stock)))))
 
 (defun ths-next-page (&optional backwards)
   "Page through the current stock list or ranking, BACKWARDS when non-nil."
@@ -345,7 +443,9 @@
 
 (defun ths--ranking-open (ref stock)
   "Open ranked STOCK in the quote dashboard belonging to REF."
-  (let ((code (plist-get stock :code)) (symbol (plist-get stock :symbol)))
+  (setq ths--ranking-toolbar-stock (cons (ths--ranking-key (etaf-value ref)) stock))
+  (ths--ranking-save-position)
+  (let ((code (ths-data-id stock)) (symbol (plist-get stock :symbol)))
     (unless (ths-data-find code)
       (setq ths-data-stocks
             (append ths-data-stocks
@@ -370,14 +470,18 @@
         ((>= volume 10000) (format "%.2f万手" (/ volume 10000.0)))
         (t (format "%.0f手" volume))))
 
-(defun ths--ranking-columns (columns &optional sort)
+(defun ths--ranking-columns (columns &optional sort universe)
   "Return table fields for COLUMNS cells, keeping SORT's amount visible."
-  (if (< columns 80)
+  (cond
+   ((and (< columns 80) (memq universe '(etf lof)))
+    (append '((:code "代码" 8) (:name "名称" 10) (:price "最新" 8))
+            (list (if (eq sort 'amount) '(:amount "成交额" 13) '(:change "涨跌幅" 10)))))
+   ((< columns 80)
       (if (eq sort 'amount)
           (append '((:code "代码" 8) (:name "名称" 9) (:amount "成交额" 11) (:float-cap "流通市值" 11))
                   (when (>= columns 55) '((:change-60d "60日涨跌幅" 12))))
-        '((:code "代码" 8) (:name "名称" 9) (:float-cap "流通市值" 11) (:change-60d "60日涨跌幅" 12)))
-    (append
+        '((:code "代码" 8) (:name "名称" 9) (:float-cap "流通市值" 11) (:change-60d "60日涨跌幅" 12))))
+   (t (append
      (if (< columns 90)
          '((:rank "名次" 5) (:code "代码" 8) (:name "名称" 10)
            (:price "最新" 8) (:change "涨跌幅" 9))
@@ -389,7 +493,7 @@
      '((:float-cap "流通市值" 11) (:change-60d "60日涨跌幅" 13))
      (when (>= columns 112)
        (list (if (eq sort 'amount) '(:volume "成交量" 12) '(:amount "成交额" 12))
-             '(:turnover "换手率" 10))))))
+             '(:turnover "换手率" 10)))))))
 
 (defun ths--ranking-cells (fields &optional stock)
   "Build fixed-width table cells for FIELDS and optional STOCK, or headers."
@@ -400,7 +504,7 @@
             (text (if (not stock) (nth 1 field)
                     (pcase key
                       (:rank (number-to-string value))
-                      (:price (ths--number value))
+                      (:price (ths-data-format-price stock value))
                       ((or :change :change-60d) (ths--number value "%+.2f%%"))
                       (:volume (ths--volume value))
                       ((or :amount :float-cap) (ths--amount value))
@@ -415,11 +519,12 @@
 (defun ths--ranking-view (state ref columns)
   "Build the whole-market ranking page for STATE, REF and COLUMNS."
   (let* ((data (ths--ranking-data state)) (rows (plist-get data :rows))
+         (universe (ths-data-ranking-universe (plist-get state :ranking-universe)))
          (sort (plist-get state :ranking-sort)) (page (plist-get state :ranking-page))
          (total (plist-get data :total)) (stamp (plist-get data :fetched-at))
          (failure (plist-get data :error))
          (loading (and ths--requests (gethash (cons 'ranking (ths--ranking-key state)) ths--requests)))
-         (fields (ths--ranking-columns columns sort))
+         (fields (ths--ranking-columns columns sort universe))
          (capacity (ths--ranking-capacity))
          (offset (min (* (/ (or (plist-get state :ranking-offset) 0) capacity) capacity)
                       (* (/ (max 0 (1- (length rows))) capacity) capacity))))
@@ -431,11 +536,17 @@
                  (list (ths--button 'page-quotes "行情 0" #'ths-show-quotes)
                        (ths--button 'page-ranking "排行榜 3" #'ths-show-ranking t)))
       (ths--shortcut-hint columns t)
-      (etaf-node 'row '(:item-gap (ch 1))
-                 (list (ths--button 'rank-change "涨幅榜 ↓" (lambda () (ths--ranking-select ref 'change)) (eq sort 'change))
+      (etaf-node 'row '(:item-gap (ch 1) :height (lh 1) :overflow hidden)
+                 (list (ths--button 'rank-stock "A股" (lambda () (ths-ranking-set-universe 'stock)) (eq universe 'stock))
+                       (ths--button 'rank-etf "ETF" (lambda () (ths-ranking-set-universe 'etf)) (eq universe 'etf))
+                       (ths--button 'rank-lof "LOF" (lambda () (ths-ranking-set-universe 'lof)) (eq universe 'lof))
+                       (ths--button 'rank-change "涨幅榜 ↓" (lambda () (ths--ranking-select ref 'change)) (eq sort 'change))
                        (ths--button 'rank-amount "成交额榜 ↓" (lambda () (ths--ranking-select ref 'amount)) (eq sort 'amount))))
-      (ths--text (if (eq sort 'amount) "沪深京 A 股 · 按成交额降序 · 单位：元"
-                   "沪深京 A 股 · 从高到低 · 成交量单位：手（100 股）") (ths-theme-color 'secondary))
+      (ths--text (concat (if (eq universe 'stock) "沪深京 A 股" (ths-data-ranking-label universe))
+                         (if (eq sort 'amount) " · 按成交额降序 · 单位：元"
+                           (if (eq universe 'stock) " · 从高到低 · 成交量单位：手（100 股）"
+                             " · 从高到低 · 成交量单位：手（100 份）")))
+                 (ths-theme-color 'secondary))
       (ths--text (concat (ths--source (plist-get data :source)) " · "
                          (if stamp (concat "采集时间 " (format-time-string "%F %T" (seconds-to-time stamp) 28800))
                            "尚未获取数据")
@@ -474,9 +585,9 @@
 
 (defun ths--initial-state (favorites)
   "Return fresh application state with FAVORITES stock symbols."
-  (list :selected (plist-get (car ths-data-stocks) :code) :query "" :tab 'all :chart 'intraday
-        :page 'quotes :ranking-sort 'change :ranking-page 1
-        :sorted nil :favorites (mapcar (lambda (symbol) (substring symbol 2)) favorites)))
+  (list :selected (ths-data-id (car ths-data-stocks)) :query "" :tab 'all :chart 'intraday
+        :page 'quotes :ranking-universe 'stock :ranking-sort 'change :ranking-page 1
+        :sorted nil :favorites (mapcar #'ths-data-symbol-id favorites)))
 
 (defun ths--stocks (state)
   "Return stocks visible under STATE."
@@ -490,8 +601,8 @@
          (let* ((next (plist-put (copy-sequence old) key value))
                 (stocks (ths--stocks next)))
            (unless (seq-find (lambda (stock)
-                               (equal (plist-get stock :code) (plist-get next :selected))) stocks)
-             (setq next (plist-put next :selected (plist-get (car stocks) :code))))
+                               (equal (ths-data-id stock) (plist-get next :selected))) stocks)
+             (setq next (plist-put next :selected (ths-data-id (car stocks)))))
            next)))
   (when (eq ref ths--state) (ths--ensure-chart)))
 
@@ -556,14 +667,14 @@ Named panels occupy the current height budget, including padding."
   (ths-watchlist-save
    (mapcar (lambda (code)
              (plist-get (or (ths-data-find code)
-                            (and (equal code (plist-get new-stock :code)) new-stock)) :symbol)) codes)))
+                            (and (equal code (ths-data-id new-stock)) new-stock)) :symbol)) codes)))
 
 (defun ths-add-favorite (input &optional name)
   "Add stock INPUT to the watchlist and open its quote details.
 NAME is optional display metadata selected from stock search suggestions."
   (interactive (let ((stock (ths-search-read ths-data-stocks)))
                  (list (plist-get stock :symbol) (plist-get stock :name))))
-  (let* ((symbol (ths-watchlist-symbol input)) (code (substring symbol 2))
+  (let* ((symbol (ths-watchlist-symbol input)) (code (ths-data-symbol-id symbol))
          (stock (ths-data-find code)) (state (etaf-value ths--state))
          (favorites (plist-get state :favorites))
          (next (if (member code favorites) favorites (append favorites (list code)))))
@@ -607,7 +718,7 @@ NAME is optional display metadata selected from stock search suggestions."
   (let* ((stocks (ths--stocks state))
          (capacity (if ths--panel-rows ths--stock-page-size (max 1 (length stocks))))
          (index (or (cl-position (plist-get state :selected) stocks
-                                 :key (lambda (stock) (plist-get stock :code)) :test #'equal) 0))
+                                 :key (lambda (stock) (ths-data-id stock)) :test #'equal) 0))
          (page (/ index capacity))
          (row-height (if ths--roomy 2 1))
          (visible (seq-subseq stocks (* page capacity) (min (length stocks) (* (1+ page) capacity))))
@@ -627,7 +738,7 @@ NAME is optional display metadata selected from stock search suggestions."
        (ths--text "  代码    名称        最新     涨跌幅" (ths-theme-color 'muted)))
       (mapcar
        (lambda (stock)
-	 (let* ((code (plist-get stock :code))
+	 (let* ((code (ths-data-id stock))
 		(selected (equal code (plist-get state :selected)))
 		(label (format "%s %s  %s %8s  %8s"
                                (if (member code (plist-get state :favorites)) "*" " ")
@@ -656,6 +767,102 @@ NAME is optional display metadata selected from stock search suggestions."
      42 'watchlist-panel)))
 
 (defun ths--detail (state ref width)
+  "Build the appropriate detail view for the selected security."
+  (if (ths-data-otc-p (ths-data-find (plist-get state :selected)))
+      (ths--fund-detail state ref width)
+    (ths--exchange-detail state ref width)))
+
+(defun ths--fund-detail (state ref width)
+  "Display published fund values within STATE's panel and WIDTH."
+  (let* ((stock (ths-data-find (plist-get state :selected)))
+         (money (plist-get stock :money-fund))
+         (accumulated (eq (plist-get state :chart) 'daily))
+         (unit-label (if money "万份收益" "单位净值"))
+         (acc-label (if money "七日年化" "累计净值"))
+         (rows (ths-chart-nav-rows stock accumulated))
+         (chart-rows (max 2 (- ths--panel-rows (ths--panel-overhead) 7)))
+         (chart-width (max 2 (- width 4)))
+         (change (ths-data-change stock)))
+    (ths--panel
+     (format "%s  %s / 场外" (plist-get stock :name) (plist-get stock :code))
+     (list
+      (ths--text (format "%s %s%s" unit-label (ths-data-format-price stock (plist-get stock :price))
+                         (if money " 元" (concat "  日增长 " (ths--number change "%+.2f%%"))))
+                 (if money (ths-theme-color 'foreground) (ths--color change)))
+      (ths--text (format "%s %s%s" acc-label (ths-data-format-price stock (plist-get stock :acc-nav))
+                         (if money "%" "")) (ths-theme-color 'secondary))
+      (ths--text (format "公布日期 %s" (or (plist-get stock :time) "--")) (ths-theme-color 'secondary))
+      (etaf-node 'row '(:item-gap (ch 1))
+                 (list (ths--button 'intraday unit-label (lambda () (ths--set ref :chart 'intraday)) (not accumulated))
+                       (ths--button 'daily acc-label (lambda () (ths--set ref :chart 'daily)) accumulated)))
+      (ths--text (format "%s走势 · 最近 %d 期" (if accumulated acc-label unit-label) (length rows))
+                 (ths-theme-color 'secondary))
+      (etaf-node
+       'column (list :ref 'chart-region :height (list 'lh chart-rows))
+       (list
+        (cond
+         ((not rows) (ths--text (if (plist-get stock :quote-error) "暂无净值数据 · 获取失败，按 r 重试" "暂无净值数据 · 等待公布")
+                                (ths-theme-color 'warning)))
+         ((and (display-graphic-p) (image-type-available-p 'svg))
+          (etaf-node 'image
+                     (list :ref 'nav-chart :src (list 'image :type 'svg :data
+                                                       (ths-chart-nav stock accumulated chart-width chart-rows t))
+                           :columns chart-width :rows chart-rows :adapter 'auto) nil))
+         (t (ths--text (ths-chart-nav stock accumulated (max 2 (- chart-width 10)) chart-rows))))))
+      (ths--text (if rows (format "%s — %s" (plist-get (car rows) :date) (plist-get (car (last rows)) :date)) "--")
+                 (ths-theme-color 'muted))
+      (ths--text (concat "天天基金 · 公布数据"
+                         (if (plist-get stock :quote-error) " · 更新失败，保留上次数据" ""))
+                 (ths-theme-color 'secondary)))
+     width 'detail-panel)))
+
+(defun ths--fund-info (state)
+  "Build fund metadata instead of an order book for STATE."
+  (let* ((stock (ths-data-find (plist-get state :selected)))
+         (money (plist-get stock :money-fund)))
+    (ths--panel
+     "基金信息"
+     (list (ths--text (plist-get stock :symbol))
+           (ths--text (if money "货币基金 · 公布收益" "场外基金 · 公布净值"))
+           (ths--text (format "净值日期 %s" (or (plist-get stock :time) "--")))
+           (ths--text "数据源：天天基金")
+           (ths--text "每日公布，非盘中估值")
+           (ths--text (if money "万份收益：元 / 万份" "日增长率采用接口公布值"))
+           (ths--text (if money "七日年化：百分比" "累计净值包含历史分红"))
+           (ths--text "无场内盘口或成交记录"))
+     32 'book-panel)))
+
+(defun ths--fund-history (state)
+  "Show the most recent published fund values within STATE's height budget."
+  (let* ((stock (ths-data-find (plist-get state :selected)))
+         (money (plist-get stock :money-fund))
+         (rows (seq-take (reverse (plist-get stock :nav-history))
+                         (max 0 (- ths--panel-rows (ths--panel-overhead) 2)))))
+    (ths--panel
+     (if money "历史收益" "历史净值")
+     (append
+      (list (ths--text (if money "日期        万份收益  七日年化" "日期        单位净值  日增长率") (ths-theme-color 'muted)))
+      (mapcar (lambda (row)
+                (ths--text (format "%s %8s %7s" (plist-get row :date)
+                                   (ths-data-format-price stock (plist-get row :nav))
+                                   (ths--number (plist-get row (if money :acc-nav :change)) "%.2f%%"))
+                           (if money (ths-theme-color 'foreground) (ths--color (plist-get row :change))))) rows)
+      (list (ths--text "最近公布记录在上" (ths-theme-color 'muted))))
+     32 'trades-panel)))
+
+(defun ths--book (state)
+  "Choose fund information or the exchange order book for STATE."
+  (if (ths-data-otc-p (ths-data-find (plist-get state :selected)))
+      (ths--fund-info state)
+    (ths--exchange-book state)))
+
+(defun ths--trades (state)
+  "Choose fund history or recent exchange trades for STATE."
+  (if (ths-data-otc-p (ths-data-find (plist-get state :selected)))
+      (ths--fund-history state)
+    (ths--exchange-trades state)))
+
+(defun ths--exchange-detail (state ref width)
   "Build quote and chart panel from STATE and REF within WIDTH cells."
   (let ((stock (ths-data-find (plist-get state :selected)))
         (chart-width (- width 2))
@@ -669,7 +876,7 @@ NAME is optional display metadata selected from stock search suggestions."
              (kind (if intraday 'intraday 'daily))
              (chart-error (plist-get stock (intern (format ":%s-error" kind)))))
         (ths--panel
-         (format "%s  %s  /  %s" (plist-get stock :name) (plist-get stock :code)
+         (format "%s  %s  /  %s" (plist-get stock :name) (ths-data-id stock)
                  (plist-get stock :sector))
          (list
           (etaf-node 'row '(:item-gap (ch 2))
@@ -678,7 +885,7 @@ NAME is optional display metadata selected from stock search suggestions."
                                               (ths--number change "%+.2f%%"))
                                       (ths--color change))
                            (ths--button 'favorite-toggle
-                                        (if (member (plist-get stock :code) (plist-get state :favorites)) "移出自选" "+ 加自选")
+                                        (if (member (ths-data-id stock) (plist-get state :favorites)) "移出自选" "+ 加自选")
                                         (lambda () (ths--favorite ref)))))
           (ths--text (format "昨收 %s    最高 %s    最低 %s"
                              (ths-data-format-price stock (plist-get stock :close))
@@ -717,7 +924,7 @@ NAME is optional display metadata selected from stock search suggestions."
                              (if chart-error " · 更新失败，保留上次数据" "")) (ths-theme-color 'secondary)))
          width 'detail-panel)))))
 
-(defun ths--book (state)
+(defun ths--exchange-book (state)
   "Build the five-level book for STATE."
   (let ((stock (ths-data-find (plist-get state :selected))))
     (ths--panel
@@ -758,7 +965,7 @@ NAME is optional display metadata selected from stock search suggestions."
                     (list (ths--text text color)))))
      '((:time "时间" 9) (:price "价格" 8) (:volume "量/手" 8) (:side "性质" 5)))))
 
-(defun ths--trades (state)
+(defun ths--exchange-trades (state)
   "Build recent trades using the full assigned panel height for STATE."
   (let* ((stock (ths-data-find (plist-get state :selected)))
          (stamp (plist-get stock :trades-fetched-at))
@@ -823,19 +1030,25 @@ NAME is optional display metadata selected from stock search suggestions."
           (etaf-activate runtime)))
     (call-interactively (lookup-key ths-mode-map (kbd key)))))
 
-(defun ths--shortcut-hint (columns &optional ranking)
-  "Build clickable shortcut buttons suited to COLUMNS and RANKING."
-  (let* ((items (append '(("j" "下一只") ("k" "上一只"))
-                        (if ranking '(("RET" "打开") ("s" "切换排行"))
+(defun ths--shortcut-hint (columns &optional ranking state)
+  "Build clickable shortcut buttons suited to COLUMNS, RANKING and STATE."
+  (let* ((stock (ths-data-find (plist-get state :selected)))
+         (items (append '(("j" "下一只") ("k" "上一只"))
+                        (if ranking '(("RET" "打开") ("u" "类别") ("s" "切换排行"))
                           '(("a" "添加") ("d" "删除") ("f" "自选") ("s" "排序")))
                         '(("p" "上一页") ("n" "下一页"))
-                        (if ranking '(("0" "行情")) '(("1" "分时") ("2" "日K") ("/" "搜索")))
+                        (if ranking '(("0" "行情"))
+                          (if (ths-data-otc-p stock)
+                              (if (plist-get stock :money-fund)
+                                  '(("1" "收益") ("2" "年化") ("/" "搜索"))
+                                '(("1" "单位") ("2" "累计") ("/" "搜索")))
+                            '(("1" "分时") ("2" "日K") ("/" "搜索"))))
                         '(("r" "刷新") ("T" "主题") ("q" "退出"))))
          (full-width (+ (1- (length items))
                         (cl-loop for (key label) in items sum (+ 3 (string-width key) (string-width label)))))
          (compact (> full-width (- columns 2))))
     (when (< columns 80)
-      (setq items (seq-filter (lambda (item) (member (car item) (if ranking '("j" "k" "RET" "s" "r" "T" "0")
+      (setq items (seq-filter (lambda (item) (member (car item) (if ranking '("j" "k" "RET" "u" "s" "r" "T")
                                                                '("j" "k" "a" "d" "/" "r" "T")))) items)))
     (etaf-node
      'row (list :ref 'shortcut-hint :height '(lh 1) :overflow 'hidden :item-gap '(ch 1))
@@ -874,7 +1087,7 @@ NAME is optional display metadata selected from stock search suggestions."
                      (list (ths--button 'page-quotes "行情 0" #'ths-show-quotes t)
                            (ths--button 'page-ranking "排行榜 3" #'ths-show-ranking)
                            (ths--button 'clear-search "清空" (lambda () (ths--set ref :query "")))))
-          (ths--shortcut-hint columns)
+          (ths--shortcut-hint columns nil state)
           (etaf-node
            'row '(:height (lh 1) :overflow hidden :item-gap (ch 3))
            (mapcar
@@ -938,7 +1151,7 @@ NAME is optional display metadata selected from stock search suggestions."
   (if (eq (plist-get (etaf-value ths--state) :page) 'ranking)
       (ths-ranking-next-stock backwards)
     (let* ((state (etaf-value ths--state)) (stocks (ths--stocks state))
-         (codes (mapcar (lambda (stock) (plist-get stock :code)) stocks)))
+         (codes (mapcar (lambda (stock) (ths-data-id stock)) stocks)))
     (when codes
       (ths--set ths--state :selected
                 (nth (mod (+ (or (cl-position (plist-get state :selected) codes :test #'equal) 0)
@@ -970,6 +1183,7 @@ NAME is optional display metadata selected from stock search suggestions."
                    ("a" . ths-add-favorite) ("d" . ths-remove-favorite)
                    ("1" . ths-intraday) ("2" . ths-daily) ("g" . ths-refit)
                    ("0" . ths-show-quotes) ("3" . ths-show-ranking)
+                   ("u" . ths-ranking-cycle-universe)
                    ("n" . ths-next-page) ("p" . ths-previous-page)
                    ("r" . ths-refresh) ("T" . ths-toggle-theme) ("q" . quit-window)))
   (define-key ths-mode-map (kbd (car binding)) (cdr binding)))
@@ -988,7 +1202,8 @@ NAME is optional display metadata selected from stock search suggestions."
         (let ((favorites (ths-watchlist-load)))
           (setq ths-data-stocks (mapcar #'ths-data-placeholder (delete-dups (append ths-data-symbols favorites)))
 		ths-data-indices (mapcar #'ths-data-placeholder ths-data-index-symbols)
-		ths--rankings (make-hash-table :test #'equal))
+		ths--rankings (make-hash-table :test #'equal)
+                ths--ranking-positions (make-hash-table :test #'equal))
           (let ((state (etaf-ref (ths--initial-state favorites))))
             (setq-local truncate-lines t)
             (ths--apply-buffer-theme)
@@ -1004,7 +1219,7 @@ NAME is optional display metadata selected from stock search suggestions."
 		(setq ths--timer
                       (run-at-time (max 5 ths-refresh-interval) (max 5 ths-refresh-interval)
                                    (lambda () (when (buffer-live-p buffer)
-						(with-current-buffer buffer (ths-refresh))))))))))))
+						(with-current-buffer buffer (ths-refresh t))))))))))))
     (when (called-interactively-p 'interactive)
       (pop-to-buffer-same-window buffer)
       (ths-refit))

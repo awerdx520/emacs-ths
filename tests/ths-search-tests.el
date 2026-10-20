@@ -27,7 +27,7 @@
                (lambda (address provider cb)
                  (should (eq provider 'eastmoney))
                  (setq url address callback cb) #'ignore)))
-      (ths-data-search "贵州&银行" (lambda (rows err) (setq result rows failure err)))
+      (ths-data--stock-search "贵州&银行" (lambda (rows err) (setq result rows failure err)))
       (should (string-match-p "keyword=%E8%B4%B5%E5%B7%9E%26%E9%93%B6%E8%A1%8C" url))
       (funcall callback ths-search-test-response nil)
       (should (= 4 (length result)))
