@@ -1,0 +1,11 @@
+# 技术债
+
+| 日期 | 位置 | 描述 | 影响 | 建议 |
+|---|---|---|---|---|
+| 2026-10-23 | `README.md`「开发」节、`tests/ths-live-check.el`、`tests/ths-gui-tests.el` 注释 | **已解决（2026-10-23）**：文档引用的 `make check` / `make run` / `make live-check` 现已由仓库根的 `Makefile` 提供（另含 `compile` / `test` / `check-all` / `clean` / `help`） | 开发者无法按文档验证；agent 需手写 `emacs -Q --batch` 命令，易与文档漂移 | 已补 `Makefile`（check / check-all / compile / test / live-check / run / clean / help） |
+| 2026-10-22 | `tests/ths-tests.el` 的 `ths-fixture-charts-and-book-have-consistent-bounds`；`tests/ths-volume-tests.el` 的 `ths-volume-dashboard-shows-both-panels-without-growing-page`、`ths-volume-terminal-charts-preserve-height-and-column-width` | 基线测试红（3 例）：干净检出的仓库上即失败。11 文件全量离线套件实测 `Ran 144, 141 expected, 3 unexpected`，与是否加载 `tests/ths-ai-tests.el` 无关（不加载时 `Ran 123, 120 expected, 3 unexpected`，同一 3 例）；`ths-fixture-charts-and-book-have-consistent-bounds` 单独跑 `tests/ths-tests.el` 亦为 `Ran 14, 13 expected, 1 unexpected` | 全量 ERT 无法以「0 unexpected」为门禁，只能以「无新增 unexpected」为口径（T7 验收即按此口径） | 单独定位修复这 3 个夹具断言，或明确豁免并写入 README |
+| 2026-10-23 | `tests/` | **已解决（2026-10-23）**：离线测试启动引导已固化为 `tests/run-offline.sh` 与 `Makefile` 的 `BOOTSTRAP` 变量（`package-initialize` → 找不到 `etaf` 时补 straight build 目录 → 仓库根前置），两处逻辑一致 | 与「缺 Makefile」叠加后，每次跑离线 ERT 都要手写长 `--eval` BOOT 串，易漏项导致加载到旧版 `ths` | 已新增 `tests/run-offline.sh`（`--all` / `--selector REGEXP`）+ `Makefile` 的 `BOOTSTRAP` |
+| 2026-10-22 | `README.md`「开发」节 | 文档与仓库不一致：README 仍描述 `make check` / `make run` / `make live-check`，仓库无 `Makefile`（与第 1 条同源，本条补充「测试引导脚本缺失」维度） | 新环境无法复现文档中的验证流程 | 与第 1、3 条合并处理：补 `Makefile` + `tests/run-offline.sh`，或统一改为显式命令 |
+| 2026-10-22 | `ths-ai--present` 写入 `*THS 分析*` 的 `ths-ai--dashboard-buffer` | 报告 buffer 保存的看板 buffer 指向已被 kill 的看板时不会被清理（有 `buffer-live-p` 保护，仅悬空引用） | 无功能问题，仅轻微引用残留 | `ths--stop` 时同步清理报告 buffer 的 buffer-local 值（需改 `ths.el`，本期回避） |
+| 2026-10-22 | `ths-ai--neutralise-schemes` | scheme 匹配不跳过 http(s) URL 内部 | `https://a/b/file:c` 会被改写为 `https://a/b/file :c`，链接仍可解析但文本变形（纯可读性，无安全影响） | 匹配前先定位 URL 区间并跳过 |
+| 2026-10-22 | 报告 buffer（`ths-ai--present` 内的 `org-confirm-elisp-link-function` / `org-confirm-shell-link-function`） | 使用 `org-confirm-elisp-link-function` / `org-confirm-shell-link-function` 的旧别名 | 新名 `org-link-{elisp,shell}-confirm-function` 已生效，旧名被标记 obsolete，未来 Org 版本删除后会静默失效（届时仅剩第一层净化防护） | 改用新变量名并保留旧名兼容分支 |
