@@ -6,8 +6,8 @@
 - 已确认：方案 ✅（用户 2026-10-22 确认原方案含 4 项取舍 + 迁移与 11 项修订），计划 ✅（用户 2026-10-22 确认；plan-reviewer 两轮独立审查：第一轮 blocking 经实测证伪并转为加固、第二轮 blocking 已修复）
 - 工件归属：本计划 2026-10-22 从 `~/thomas-emacs/openspec/active/` 迁入本仓库；thomas-emacs 侧只保留指针文件
 - 安全点：分支 `feat/hk-us-support` + tag `pre-hkus-baseline`
-- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ✅（分时与日 K：槽位画像化、端点按市场分派、港美取值路径与新浪日 K 兜底，141 tests 绿）；任务4 ✅（搜索港美映射与自选兼容，146 tests 绿）；locale 补强 ✅（Makefile 固定 `LC_ALL=C.UTF-8`，`make check` 结果与调用者 locale 无关，146 tests / 0 unexpected 绿）；任务5 ~ 任务8 待执行
-- 下一步：任务5（排行榜：universe 扩 5 类、新浪港美榜单端点、东财港美节点跳过）
+- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ✅（分时与日 K：槽位画像化、端点按市场分派、港美取值路径与新浪日 K 兜底，141 tests 绿）；任务4 ✅（搜索港美映射与自选兼容，146 tests 绿）；locale 补强 ✅（Makefile 固定 `LC_ALL=C.UTF-8`，`make check` 结果与调用者 locale 无关，146 tests / 0 unexpected 绿）；任务5 ✅（排行榜港美：universe 扩 5 类、新浪港美榜单端点与体内 count、窄窗按钮降级，152 tests / 0 unexpected 绿）；任务6 ~ 任务8 待执行
+- 下一步：任务6（UI 展示：详情页市场标签与币种、1 档盘口、港美不发 trades、成交量单位、指数条 8 条）
 
 ## 前置事实（实测 2026-10-22）
 
@@ -130,6 +130,8 @@
 | `stock` / `etf` / `lof` | 东财 + 新浪回退 | 现状不变（`ths-data--ranking-url` / `ths-data--ranking-sina-url`） | JSON / JSONP | 东财 `data.total`；新浪 `getHQNodeStockCount` |
 | `hkstock` | 新浪 | `Market_Center.getHKStockData?page=N&num=20&sort=changepercent` 或 `amount`，`asc=0&node=qbgg_hk` | 裸 JSON 数组 | 单独端点 `Market_Center.getHKStockCount?node=qbgg_hk` = 2492 |
 | `usstock` | 新浪 | `jsonp_v2.php/var t=/US_CategoryService.getList?page=N&num=20&sort=chg` 或 `amount`，`asc=0&market=&id=` | JSONP（需剥 `var t=` 与包裹括号） | 体内 `count` = 18324 |
+
+> 实测补充（2026-10-22，任务5 完成时落定）：港股榜为裸 JSON 数组、24 个字符串字段，涨跌幅字段 `changepercent`、成交额字段 `amount`（原币）、现价 `lasttrade`、昨收 `prevclose`、时间 `ticktime`、`market_value` 实测恒 `0`（不可用 → 不填）；港股 count 响应体是 JSON 字符串 `"2492"`。美股榜 JSONP 包裹为 `/*<script>…</script>\n var t=(…)`，体内 `count` 是**字符串** `"18324"`、位于顶层与 `data` 同级；涨跌幅字段 `chg`、现价 `price`、昨收 `preclose`、中文名 `cname`；**美股榜单没有成交额字段**（`mktcap` 不是成交额）→ 成交额列恒 `--`。`__qn=1` 参数对结果无影响，未采用。
 
 ### ⑤ 搜索映射
 
@@ -260,8 +262,8 @@
     - **确认项实测**：`ths-data-fetch` 只对 `of` 前缀转 `ths-data--fund-fetch`（`ths-data.el:1170` 附近 `(string-prefix-p "of" symbol)`），`ths-data-otc-p` 只认 `of`，`ths-watchlist-save` 仍 `(json-serialize (vconcat symbols))` 写纯数组、`ths-watchlist-load` 仍按数组读 → 旧 JSON 直接可读。
     - **发现的既有环境问题（非本任务引入）**：`tests/ths-tests.el:138` 与 `tests/ths-volume-tests.el` 两条用例在 `LANG=zh_CN.UTF-8` 下失败、`LANG=en_US.UTF-8` 下通过（宽字符宽度随 locale 变化）。用 `git worktree` 在 HEAD `172e20d` 基线上复现同样 3 条失败（141 tests / 3 unexpected），确认与本次改动无关；`make check` 需在 `LANG=en_US.UTF-8` 下运行才能拿到 exit 0。
 
-- [ ] 任务5：排行榜
-  - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths.el`（修改）
+- [x] 任务5：排行榜
+  - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths.el`（修改）、`/home/thomas/Workspace/emacs-ths/tests/ths-hkus-tests.el`（新增用例）、`/home/thomas/Workspace/emacs-ths/tests/ths-fund-ranking-tests.el`（既有断言修正）、`/home/thomas/Workspace/emacs-ths/tests/ths-ranking-tests.el`（既有断言修正）
   - 步骤：
     - 改 `ths-data-ranking-universe`（`ths-data.el:498`，`(memq universe '(nil stock etf lof))`）为 5 类；`ths-data-ranking-label`（`:504`，pcase 3 分支）补 `hkstock → 港股`、`usstock → 美股`。
     - 改 `ths-data--ranking-symbol`（`:519`，只认 `[0-9]{6}`）按 universe 分派：`hkstock` → `hk` + 5 位、`usstock` → `us` + 字母。
@@ -271,6 +273,16 @@
     - 改 `ths.el`：`ths-ranking-cycle-universe`（`ths.el:295`，`(pcase universe ('etf 'lof) ('lof 'stock) (_ 'etf))`）改 5 态；universe 按钮行（`ths.el:539`，首个按钮 `rank-stock` 在 `:540`）补 港股 / 美股；`ths--ranking-columns`（`ths.el:473`，`(memq universe '(etf lof))` 窄屏分支）对港美隐藏 60 日涨跌幅与流通市值列。
   - 验收标准：新增 ERT `ths-hkus-ranking-urls`（断言 `node=qbgg_hk` 与 `US_CategoryService.getList` 各出现一次、东财分支不发请求）、`ths-hkus-ranking-parse-total`（2492 / 18324）、`ths-hkus-ranking-cycle-5-states`；`tests/ths-fund-ranking-tests.el` 既有 universe / 排序断言全绿。
   - 依赖：任务2、任务4（三者都改 ths-data.el，必须串行：任务2 → 任务4 → 任务5；禁止并行编辑同一文件）
+  - 实现记录（2026-10-22，含前置探测与实测偏差）：
+    - 端点探测（`fetch` 直连 + `Referer: https://finance.sina.com.cn`，HTTP 200 × 4）：① 港股榜是**裸 JSON 数组**（24 个字符串字段，无包裹）：`symbol`（5 位含前导零）/ `name` / `lasttrade`（现价）/ `prevclose`（昨收）/ `open` / `high` / `low` / `volume`（股）/ `amount`（原币）/ `changepercent`（百分比）/ `ticktime`（时间）/ `market_value`（实测恒 `0`，不可用）；排序参数 `sort=changepercent|amount`、`asc=0`、`node=qbgg_hk`。② 港股总数用独立端点 `Market_Center.getHKStockCount?node=qbgg_hk`，响应体是 JSON **字符串** `"2492"`（`ths-data--ranking-sina-count` 直接复用）。③ 美股榜为 JSONP：`/*<script>location.href='//sina.com';</script>\n var t=({"count":"18324","data":[…]})`，**count 在体内且是字符串**，字段 `symbol` / `cname`（中文名）/ `price` / `chg`（百分比）/ `preclose` / `open` / `high` / `low` / `volume` / `mktcap` / `market`；排序参数 `sort=chg|amount`、`asc=0`；`__qn=1` 有无不影响结果。④ 两个 universe 的**成交额**：港股有 `amount`；美股榜单**没有任何成交额字段**（`mktcap` 不是成交额），因此美股成交额列恒为 `--`（置 nil，不伪造），另注：`grep` 之外的第三条美股 URL 变体（`&__qn=1`）与主 URL 等价，未采用。
+    - 端到端实测（实现后走 `ths-data-fetch-ranking` 真实网络）：`hkstock change` total=2492 首行 `hk00385` change=33.89121 amount=138408；`hkstock amount` 首行 `hk00700`；`usstock change` total=18324 首行 `usOCLTR` change=99.29 amount=nil；`usstock amount` 首行 `usNVDA` amount=nil。港美均**只发 1~2 次新浪请求**，东财分支未发起任何请求。
+    - 数据层实现：`ths-data-ranking-universe` 接收 5 类；`ths-data-ranking-label` 补 港股/美股；`ths-data--ranking-stock-symbol` 增市场 116 + 5 位数字 → `hk` + code（其余 A 股分支不变）；`ths-data--ranking-symbol` 按 universe 分派（港 5 位保留前导零、美 `[.A-Za-z]+` 且至少一个字母 → `upcase`）；`ths-data--ranking-url` 对港美直接 `error`（东财不发请求）；`ths-data--ranking-sina-url` 按 universe 分派三套端点（A 股/场内基金分支逐字不变）；原 `ths-data--ranking-sina-parse` 更名为 `ths-data--ranking-sina-listed-parse`，新增 `ths-data--ranking-sina-hk-parse`、`ths-data--ranking-sina-us-parse`，并由新的 `ths-data--ranking-sina-parse` 按 universe 分派；`ths-data-fetch-ranking` 的 provider 节点表对港美剔除东财，港股保留「先 count 后 data」两段，美股只用单段 data（总数来自体内 `count`）。
+    - 行结构：与既有新浪榜一致的 `:rank :code :name :symbol :price :change :volume :amount :turnover :float-cap :change-60d :close :high :low :open :time`；港美的 `:turnover` / `:float-cap` / `:change-60d` 一律 nil（美股 `:amount` 亦 nil），UI 显示 `--`，**不填 0**。
+    - UI 实现：`ths-ranking-cycle-universe` 改 5 态（`stock → etf → lof → hkstock → usstock → stock`，发现并修掉 pcase 遗漏 `stock` 分支导致「首次按 u 停在 stock」的缺陷）；universe 按钮行改 `append` 组装，港美按钮由 `ths--ranking-hk-us-buttons`（**58 列**）控制显隐；`ths--ranking-columns` 对港美在窄窗（<80）走「代码/名称/最新/排序列」四列，宽窗隐藏 `流通市值` 与 `60日涨跌幅`（其余列保留）；副标题按市场给出「成交量单位：股」，港美成交额榜不再写「单位：元」。
+    - **窄窗分界列宽实测（ETAF 真实渲染，非估算）**：5 个按钮在 44 列结束于第 42 列（frame 左右各 1 列 padding，内容区 42 列刚好容纳）；插入「港股」「美股」（各 6 列含 padding + 2 个 1 列间隔）后末按钮结束于第 56 列 → **宽 ≥ 58 列才完整显示 7 个按钮**（实测 57 列时末按钮被裁剪到「成交额榜」不可见，58 列起 `rank-hkstock`/`rank-usstock` 与「成交额榜 ↓」全部可见）。故 44/54/57 列只显示 5 个按钮，58 列起显示 7 个。
+    - **`tests/ths-fund-ranking-tests.el` 与 `tests/ths-ranking-tests.el` 的断言修正在任务5 内完成**（原计划排在任务7）：u 键 5 态后循环断言、按钮行布局断言、`("00700" 116)` 从拒绝列表移入接受列表（并补 `("007000" 116)`、`("00700" 1)` 两条反向样本）——若不在任务5 内同步，任务5 完成即刻门禁变红，与「任务5 验收 `make check` exit 0」冲突。
+    - 另一处**既有断言受真实渲染影响**：`ths-ranking-amount-stays-visible-at-all-supported-widths-and-pages` 在 44 列断言「成交额榜」可见。首次尝试把分界设为 54 列时该断言在 54 列失败（末按钮被裁），据此把分界提高到实测值 58，而非改测试断言。
+    - 新增用例（`tests/ths-hkus-tests.el`，共 6 条，离线、无网络）：`ths-hkus-ranking-urls`、`ths-hkus-ranking-parse-total`（样本 total=3，**不写死 2492/18324**）、`ths-hkus-ranking-fetch-skips-eastmoney-and-reads-inline-count`（断言港股 2 次、美股 1 次请求且 URL 全为新浪，体内 count 生效）、`ths-hkus-ranking-us-symbols`、`ths-hkus-ranking-cycle-5-states`、`ths-hkus-ranking-narrow-window-hides-hk-us-buttons`（44/54 列隐藏港美、79/80 列显示且右缘不越界）。ERT 总数 146 → 152。
 
 - [ ] 任务6：UI 展示
   - 文件：`/home/thomas/Workspace/emacs-ths/ths.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）
@@ -294,8 +306,8 @@
     - 改 `tests/ths-ranking-tests.el:284`：`("00700" 116)` 现位于 deftest `ths-ranking-stock-types-distinguish-identical-codes-in-different-markets` 的**拒绝列表**（`:283`-`:285` 断言 `ths-data--ranking-stock-symbol` 返回 nil）。改为：把它从拒绝列表移除、并入上方 `:276`-`:280` 的接受列表，断言 `(ths-data--ranking-stock-symbol "00700" 116)` → `"hk00700"`（注意是**两参数**函数；三参数的 `ths-data--ranking-symbol` 在 `universe` 为 `stock` 时委托前者）。`ths-ranking-mixed-universe-is-rejected-without-fabricating-ranks`（`:290`）的混类拒绝语义保持不变。
     - 改 `tests/ths-live-check.el`：`pending`（`:6`）与实际检查数同步；universe `dolist`（`:40`）加 `hkstock` / `usstock`；东财相关 job 输出标注 `skip（东财本机不可达）` 且不计入 `failed`。
     - **回归确认项（不得修改）**：`tests/ths-data-tests.el:128`（A 股 240 分钟）、`tests/ths-volume-tests.el:99` / `:119`（量/手）、`tests/ths-tests.el:31`（`"卖5"` / `"买5"`）——A 股语义与文案均不变，这些断言保持原样并必须继续通过；若实现后失败，说明 A 股路径被改坏，须修实现而不是改断言。
-    - 修正 `tests/ths-fund-ranking-tests.el:212-239`（`ths-ranking-keyboard-cycle` 测试）：u 键循环从 3 态改 5 态后，期望序列改为 stock→etf→lof→hkstock→usstock→stock，并同步改写 `:239` 的最终期望值（原 `(should (eq 'stock ...))` 在第 3 次按 u 后的语义要按新顺序重算）。
-    - 修正 `tests/ths-fund-ranking-tests.el:187-210`（按钮行布局断言）：排行榜第三行按钮由 5 个（A股/ETF/LOF/涨幅榜/成交额榜）扩为 7 个后，重算 44 列最小窗口下的行号与右缘约束；若 7 个按钮在 44 列放不下，则改为窄窗口隐藏「港股/美股」两按钮（此时断言回落到 5 按钮且需新增一条「窄窗口不显示港美按钮」的断言），并在 README 按键表注明。
+    - 修正 `tests/ths-fund-ranking-tests.el:212-239`（`ths-ranking-keyboard-cycle` 测试）：u 键循环从 3 态改 5 态后，期望序列改为 stock→etf→lof→hkstock→usstock→stock，并同步改写 `:239` 的最终期望值（原 `(should (eq 'stock ...))` 在第 3 次按 u 后的语义要按新顺序重算）。**（已提前到任务5 完成，见任务5 实现记录；任务7 只需核对，勿重复改动。）**
+    - 修正 `tests/ths-fund-ranking-tests.el:187-210`（按钮行布局断言）：排行榜第三行按钮由 5 个（A股/ETF/LOF/涨幅榜/成交额榜）扩为 7 个后，重算 44 列最小窗口下的行号与右缘约束；若 7 个按钮在 44 列放不下，则改为窄窗口隐藏「港股/美股」两按钮（此时断言回落到 5 按钮且需新增一条「窄窗口不显示港美按钮」的断言），并在 README 按键表注明。**（已提前到任务5 完成：实测分界 58 列，44/54/57 列隐藏港美；`tests/ths-ranking-tests.el` 的 `("00700" 116)` 迁移亦已在任务5 完成。任务7 只需核对与 README 说明。）**
   - 验收标准：`make check` 离线全绿（不触网）；`git diff --stat` 显示无用例被删除；新增用例数 ≥ 15；`tests/ths-fund-ranking-tests.el` 全量通过，且新增断言覆盖「44 列窄窗口按钮布局」与「u 键 5 态循环顺序」。
   - 依赖：任务2、任务3、任务4、任务5、任务6
 

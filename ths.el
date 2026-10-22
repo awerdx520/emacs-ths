@@ -304,10 +304,11 @@ AUTOMATIC limits published fund updates to once every fifteen minutes."
     (ths--ranking-restore-focus t)))
 
 (defun ths-ranking-cycle-universe ()
-  "Cycle between A shares, ETF and LOF rankings, keeping the current sort."
+  "Cycle A shares, ETF, LOF, Hong Kong and US rankings, keeping the sort."
   (interactive)
   (let ((universe (plist-get (etaf-value ths--state) :ranking-universe)))
-    (ths-ranking-set-universe (pcase universe ('etf 'lof) ('lof 'stock) (_ 'etf)))))
+    (ths-ranking-set-universe
+     (pcase universe ('stock 'etf) ('etf 'lof) ('lof 'hkstock) ('hkstock 'usstock) (_ 'stock)))))
 
 (defun ths--ranking-focus-row (rows index)
   "Reveal INDEX in ROWS and give its row native keyboard focus."
@@ -481,10 +482,20 @@ FORCE allows an explicit category click to move focus from its button."
         ((>= volume 10000) (format "%.2f万手" (/ volume 10000.0)))
         (t (format "%.0f手" volume))))
 
+(defconst ths--ranking-hk-us-buttons 58
+  "Minimum ranking width in columns that still fits seven universe buttons.
+Measured with ETAF: the five original buttons end at column 42, and adding
+Hong Kong and US (six columns each plus two gaps) pushes the last button to
+column 56.  The frame keeps one column of padding on each side, so 58 columns
+are needed for the tail label to stay fully visible; narrower windows keep the
+original five buttons instead of clipping the last one.")
+
 (defun ths--ranking-columns (columns &optional sort universe)
-  "Return table fields for COLUMNS cells, keeping SORT's amount visible."
+  "Return table fields for COLUMNS cells, keeping SORT's amount visible.
+Hong Kong and US rankings have no float market cap and no 60-day change, so
+those columns are dropped instead of being displayed as empty."
   (cond
-   ((and (< columns 80) (memq universe '(etf lof)))
+   ((and (< columns 80) (memq universe '(etf lof hkstock usstock)))
     (append '((:code "代码" 8) (:name "名称" 10) (:price "最新" 8))
             (list (if (eq sort 'amount) '(:amount "成交额" 13) '(:change "涨跌幅" 10)))))
    ((< columns 80)
@@ -501,7 +512,8 @@ FORCE allows an explicit category click to move focus from its button."
      (list (if (eq sort 'amount)
                (list :amount "成交额" (if (< columns 90) 12 14))
              (list :volume "成交量" (if (< columns 90) 12 14))))
-     '((:float-cap "流通市值" 11) (:change-60d "60日涨跌幅" 13))
+     (unless (memq universe '(hkstock usstock))
+       '((:float-cap "流通市值" 11) (:change-60d "60日涨跌幅" 13)))
      (when (>= columns 112)
        (list (if (eq sort 'amount) '(:volume "成交量" 12) '(:amount "成交额" 12))
              '(:turnover "换手率" 10)))))))
@@ -548,15 +560,23 @@ FORCE allows an explicit category click to move focus from its button."
                        (ths--button 'page-ranking "排行榜 3" #'ths-show-ranking t)))
       (ths--shortcut-hint columns t)
       (etaf-node 'row '(:item-gap (ch 1) :height (lh 1) :overflow hidden)
-                 (list (ths--button 'rank-stock "A股" (lambda () (ths-ranking-set-universe 'stock)) (eq universe 'stock))
-                       (ths--button 'rank-etf "ETF" (lambda () (ths-ranking-set-universe 'etf)) (eq universe 'etf))
-                       (ths--button 'rank-lof "LOF" (lambda () (ths-ranking-set-universe 'lof)) (eq universe 'lof))
-                       (ths--button 'rank-change "涨幅榜 ↓" (lambda () (ths--ranking-select ref 'change)) (eq sort 'change))
-                       (ths--button 'rank-amount "成交额榜 ↓" (lambda () (ths--ranking-select ref 'amount)) (eq sort 'amount))))
+                 (append
+                  (list (ths--button 'rank-stock "A股" (lambda () (ths-ranking-set-universe 'stock)) (eq universe 'stock))
+                        (ths--button 'rank-etf "ETF" (lambda () (ths-ranking-set-universe 'etf)) (eq universe 'etf))
+                        (ths--button 'rank-lof "LOF" (lambda () (ths-ranking-set-universe 'lof)) (eq universe 'lof)))
+                  (when (>= columns ths--ranking-hk-us-buttons)
+                    (list (ths--button 'rank-hkstock "港股" (lambda () (ths-ranking-set-universe 'hkstock)) (eq universe 'hkstock))
+                          (ths--button 'rank-usstock "美股" (lambda () (ths-ranking-set-universe 'usstock)) (eq universe 'usstock))))
+                  (list (ths--button 'rank-change "涨幅榜 ↓" (lambda () (ths--ranking-select ref 'change)) (eq sort 'change))
+                        (ths--button 'rank-amount "成交额榜 ↓" (lambda () (ths--ranking-select ref 'amount)) (eq sort 'amount)))))
       (ths--text (concat (if (eq universe 'stock) "沪深京 A 股" (ths-data-ranking-label universe))
-                         (if (eq sort 'amount) " · 按成交额降序 · 单位：元"
-                           (if (eq universe 'stock) " · 从高到低 · 成交量单位：手（100 股）"
-                             " · 从高到低 · 成交量单位：手（100 份）")))
+                         (cond
+                          ((eq sort 'amount)
+                           (if (memq universe '(hkstock usstock)) " · 按成交额降序"
+                             " · 按成交额降序 · 单位：元"))
+                          ((memq universe '(hkstock usstock)) " · 从高到低 · 成交量单位：股")
+                          ((eq universe 'stock) " · 从高到低 · 成交量单位：手（100 股）")
+                          (t " · 从高到低 · 成交量单位：手（100 份）")))
                  (ths-theme-color 'secondary))
       (ths--text (concat (ths--source (plist-get data :source)) " · "
                          (if stamp (concat "采集时间 " (format-time-string "%F %T" (seconds-to-time stamp) 28800))

@@ -482,4 +482,203 @@ qfqday，data 键带交易所后缀 usAAPL.OQ，行同样为数组。")
                         (mapcar (lambda (row) (plist-get row :symbol))
                                 (ths-search--local session "港股"))))))
 
+;;; 任务5：排行榜（新浪港美榜单样本，探测日期 2026-10-22）。
+;; 线上总数（港股 2492 / 美股 18324）会漂移，样本改为 3 条记录 + 总数 3，
+;; 用于断言「行数与 total 一致」这一结构事实，不固着线上数字。
+
+(defconst ths-hkus-test-sina-hk-ranking
+  (concat "[{\"symbol\":\"00385\",\"name\":\"建联集团\",\"engname\":\"CHINNEY ALLI\","
+          "\"lasttrade\":\"0.32000\",\"prevclose\":\"0.23900\",\"open\":\"0.26000\","
+          "\"high\":\"0.34500\",\"low\":\"0.24600\",\"volume\":\"475200\","
+          "\"amount\":\"138408\",\"ticktime\":\"2026/10/22 15:59:59\","
+          "\"pricechange\":\"0.01600\",\"changepercent\":\"33.89121\","
+          "\"market_value\":\"0\",\"pe_ratio\":\"0\"},"
+          "{\"symbol\":\"02938\",\"name\":\"帝王国际投资－旧\",\"engname\":\"KING INTL OLD\","
+          "\"lasttrade\":\"0.50000\",\"prevclose\":\"0.47000\",\"open\":\"0.48000\","
+          "\"high\":\"0.51000\",\"low\":\"0.47000\",\"volume\":\"120000\","
+          "\"amount\":\"59000\",\"ticktime\":\"2026/10/22 15:59:59\","
+          "\"pricechange\":\"0.03000\",\"changepercent\":\"6.38298\","
+          "\"market_value\":\"0\",\"pe_ratio\":\"0\"},"
+          "{\"symbol\":\"00700\",\"name\":\"腾讯控股\",\"engname\":\"TENCENT\","
+          "\"lasttrade\":\"380.60000\",\"prevclose\":\"393.80000\",\"open\":\"387.00000\","
+          "\"high\":\"391.20000\",\"low\":\"378.40000\",\"volume\":\"51371074\","
+          "\"amount\":\"19647253727\",\"ticktime\":\"2026/10/22 15:59:59\","
+          "\"pricechange\":\"-13.20000\",\"changepercent\":\"-3.25038\","
+          "\"market_value\":\"0\",\"pe_ratio\":\"0\"}]")
+  "新浪港股榜裸 JSON 数组首页样本（24 个字符串字段，截为 3 条）。")
+
+(defconst ths-hkus-test-sina-us-ranking
+  (concat "/*<script>location.href='//sina.com';</script>*/\n"
+          "var t=({\"count\":\"3\",\"data\":["
+          "{\"name\":\"OceanLight Acquisition Corp\",\"cname\":\"OceanLight Acquisition Corp\","
+          "\"symbol\":\"OCLTR\",\"price\":\"0.28\",\"diff\":\"0.14\",\"chg\":\"99.29\","
+          "\"preclose\":\"0.14\",\"open\":\"0.15\",\"high\":\"0.30\",\"low\":\"0.14\","
+          "\"amplitude\":\"11.06%\",\"volume\":\"15503\",\"mktcap\":\"358000\",\"market\":\"NASDAQ\"},"
+          "{\"name\":\"NVDA\",\"cname\":\"英伟达公司\",\"symbol\":\"NVDA\",\"price\":\"221.97\","
+          "\"diff\":\"5.50\",\"chg\":\"2.54\",\"preclose\":\"216.47\",\"open\":\"217.00\","
+          "\"high\":\"222.50\",\"low\":\"216.20\",\"amplitude\":\"2.91%\",\"volume\":\"87085661\","
+          "\"mktcap\":\"5400000000\",\"market\":\"NASDAQ\"},"
+          "{\"name\":\"AAPL\",\"cname\":\"苹果公司\",\"symbol\":\"AAPL\",\"price\":\"261.10\","
+          "\"diff\":\"1.20\",\"chg\":\"0.46\",\"preclose\":\"259.90\",\"open\":\"260.00\","
+          "\"high\":\"261.80\",\"low\":\"259.50\",\"amplitude\":\"0.88%\",\"volume\":\"41234567\","
+          "\"mktcap\":\"3900000000\",\"market\":\"NASDAQ\"}]});")
+  "新浪美股榜 JSONP 首页样本：块注释 + `var t=({count,data});`，截为 3 条。
+注意美股榜单体内没有成交额字段。")
+
+(ert-deftest ths-hkus-ranking-urls ()
+  "港美榜单走新浪端点；东财港美分支直接报错，不发请求；A 股 / ETF / LOF 不变。"
+  (let ((hk-change (ths-data--ranking-sina-url 'change 1 nil 'hkstock))
+        (hk-amount (ths-data--ranking-sina-url 'amount 2 nil 'hkstock))
+        (hk-count (ths-data--ranking-sina-url 'change 1 t 'hkstock))
+        (us-change (ths-data--ranking-sina-url 'change 1 nil 'usstock))
+        (us-amount (ths-data--ranking-sina-url 'amount 1 nil 'usstock)))
+    (should (string-match-p "Market_Center.getHKStockData" hk-change))
+    (should (string-match-p "node=qbgg_hk" hk-change))
+    (should (string-match-p "sort=changepercent&asc=0" hk-change))
+    (should (string-match-p "page=2&num=20" hk-amount))
+    (should (string-match-p "sort=amount&asc=0" hk-amount))
+    (should (string-match-p "getHKStockCount" hk-count))
+    (should (string-match-p "node=qbgg_hk" hk-count))
+    (should (string-match-p "US_CategoryService.getList" us-change))
+    (should (string-match-p "sort=chg&asc=0" us-change))
+    (should (string-match-p "sort=amount&asc=0" us-amount)))
+  ;; 东财港美分支：报错跳过，不构造请求。
+  (dolist (universe '(hkstock usstock))
+    (dolist (sort '(change amount))
+      (should-error (ths-data--ranking-url sort 1 nil universe))
+      (should-error (ths-data--ranking-url sort 1 t universe))))
+  ;; A 股 / ETF / LOF 的东财 URL 零回归。
+  (should (string-match-p "82.push2.eastmoney.com" (ths-data--ranking-url 'change 1 nil 'stock)))
+  (should (string-match-p "fs=m:0" (ths-data--ranking-url 'change 1 nil 'stock)))
+  (should (string-match-p "b:MK0021" (ths-data--ranking-url 'change 1 nil 'etf)))
+  (should (string-match-p "b:MK0404" (ths-data--ranking-url 'change 1 nil 'lof)))
+  (should (string-match-p "node=hs_a" (ths-data--ranking-sina-url 'change 1 nil 'stock)))
+  (should (string-match-p "node=etf_hq_fund" (ths-data--ranking-sina-url 'change 1 nil 'etf)))
+  (should (string-match-p "node=lof_hq_fund" (ths-data--ranking-sina-url 'change 1 nil 'lof))))
+
+(ert-deftest ths-hkus-ranking-parse-total ()
+  "港股榜裸数组解析出 3 行、total 与缺失字段；美股榜从体内读 count。"
+  (let ((hk (ths-data--ranking-sina-parse ths-hkus-test-sina-hk-ranking 'change 1 3 'hkstock))
+        (us (ths-data--ranking-sina-parse ths-hkus-test-sina-us-ranking 'change 1 nil 'usstock)))
+    (should (eq 'hkstock (plist-get hk :universe)))
+    (should (= 3 (plist-get hk :total)))
+    (should (= 3 (length (plist-get hk :rows))))
+    (should (equal '("hk00385" "hk02938" "hk00700")
+                   (mapcar (lambda (row) (plist-get row :symbol)) (plist-get hk :rows))))
+    (let ((row (car (plist-get hk :rows))))
+      (should (= 1 (plist-get row :rank)))
+      (should (equal "00385" (plist-get row :code)))
+      (should (equal "建联集团" (plist-get row :name)))
+      (should (= 0.32 (plist-get row :price)))
+      (should (= 33.89121 (plist-get row :change)))
+      (should (= 475200 (plist-get row :volume)))
+      (should (= 138408 (plist-get row :amount)))
+      (should (= 0.239 (plist-get row :close)))
+      ;; 港股榜单无换手率 / 流通市值 / 60 日涨跌幅 → nil，不填 0。
+      (should-not (plist-get row :turnover))
+      (should-not (plist-get row :float-cap))
+      (should-not (plist-get row :change-60d)))
+    ;; 港股代码保留 5 位前导零。
+    (should (equal "00700" (plist-get (nth 2 (plist-get hk :rows)) :code)))
+    ;; 美股：JSONP 剥离包裹，总数来自体内 count。
+    (should (eq 'usstock (plist-get us :universe)))
+    (should (= 3 (plist-get us :total)))
+    (should (equal '("usOCLTR" "usNVDA" "usAAPL")
+                   (mapcar (lambda (row) (plist-get row :symbol)) (plist-get us :rows))))
+    (let ((row (car (plist-get us :rows))))
+      (should (equal "OCLTR" (plist-get row :code)))
+      (should (= 0.28 (plist-get row :price)))
+      (should (= 99.29 (plist-get row :change)))
+      (should (= 15503 (plist-get row :volume)))
+      (should (= 0.14 (plist-get row :close)))
+      ;; 美股榜单无成交额 / 流通市值 / 60 日涨跌幅 → nil。
+      (should-not (plist-get row :amount))
+      (should-not (plist-get row :float-cap))
+      (should-not (plist-get row :change-60d)))
+    ;; 单独 count 端点样本（JSON 字符串）与行数一致性校验。
+    (should (= 3 (ths-data--ranking-sina-count "\"3\"")))
+    (should-error (ths-data--ranking-sina-parse ths-hkus-test-sina-hk-ranking 'change 1 4 'hkstock))
+    (should-error (ths-data--ranking-sina-us-parse
+                   (replace-regexp-in-string "\"count\":\"3\"" "\"count\":\"4\""
+                                             ths-hkus-test-sina-us-ranking t t)
+                   'change 1))
+    ;; 港股样本喂给美股解析器必须报错（格式不兼容，不做猜测）。
+    (should-error (ths-data--ranking-sina-us-parse ths-hkus-test-sina-hk-ranking 'change 1))))
+
+(ert-deftest ths-hkus-ranking-fetch-skips-eastmoney-and-reads-inline-count ()
+  "港美榜单只请求新浪；港股先取总数再取榜，美股单请求并读体内 count。"
+  (let (urls result failure)
+    (cl-letf (((symbol-function 'ths-data--http)
+               (lambda (url _provider callback)
+                 (push url urls)
+                 (funcall callback
+                          (cond ((string-match-p "getHKStockCount" url) "\"3\"")
+                                ((string-match-p "getHKStockData" url) ths-hkus-test-sina-hk-ranking)
+                                (t ths-hkus-test-sina-us-ranking))
+                          nil)
+                 #'ignore)))
+      (ths-data-fetch-ranking 'change 1 (lambda (data err) (setq result data failure err)) 'hkstock)
+      (should-not failure)
+      (should (= 2 (length urls)))
+      (should (cl-every (lambda (url) (string-match-p "sina" url)) urls))
+      (should (= 3 (plist-get result :total)))
+      (should (equal "hk00385" (plist-get (car (plist-get result :rows)) :symbol)))
+      (setq urls nil result nil failure nil)
+      (ths-data-fetch-ranking 'amount 1 (lambda (data err) (setq result data failure err)) 'usstock)
+      (should-not failure)
+      ;; 美股只发一次请求，不请求单独的 count 端点。
+      (should (= 1 (length urls)))
+      (should (string-match-p "US_CategoryService.getList" (car urls)))
+      (should (= 3 (plist-get result :total)))
+      (should (equal "usOCLTR" (plist-get (car (plist-get result :rows)) :symbol))))))
+
+(ert-deftest ths-hkus-ranking-us-symbols ()
+  "港美代码映射与标签：美股 upcase 保留点号，港股保留 5 位前导零。"
+  (should (equal "usAAPL" (ths-data--ranking-symbol "aapl" nil 'usstock)))
+  (should (equal "usAAPL" (ths-data--ranking-symbol "AAPL" nil 'usstock)))
+  (should (equal "us.IXIC" (ths-data--ranking-symbol ".ixic" nil 'usstock)))
+  (dolist (bad '("" "1234" "AA1"))
+    (should-not (ths-data--ranking-symbol bad nil 'usstock)))
+  (should (equal "hk00700" (ths-data--ranking-symbol "00700" nil 'hkstock)))
+  (dolist (bad '("700" "007000" "HK00700"))
+    (should-not (ths-data--ranking-symbol bad nil 'hkstock)))
+  (should (equal "港股" (ths-data-ranking-label 'hkstock)))
+  (should (equal "美股" (ths-data-ranking-label 'usstock)))
+  (should (equal "A 股" (ths-data-ranking-label 'stock)))
+  (should (equal "ETF" (ths-data-ranking-label 'etf)))
+  (should (equal "LOF" (ths-data-ranking-label 'lof)))
+  (should-error (ths-data-ranking-universe 'unknown)))
+
+(ert-deftest ths-hkus-ranking-cycle-5-states ()
+  "u 键循环 5 态：A股 → ETF → LOF → 港股 → 美股 → A股。"
+  (ths-test-with-dashboard
+    (should (eq #'ths-ranking-cycle-universe (key-binding (kbd "u"))))
+    (dolist (universe '(etf lof hkstock usstock))
+      (call-interactively #'ths-ranking-cycle-universe)
+      (should (eq universe (plist-get (etaf-value ths--state) :ranking-universe)))
+      (should (ths-test-visible (ths-data-ranking-label universe))))
+    (call-interactively #'ths-ranking-cycle-universe)
+    (should (eq 'stock (plist-get (etaf-value ths--state) :ranking-universe)))))
+
+(ert-deftest ths-hkus-ranking-narrow-window-hides-hk-us-buttons ()
+  "窄窗口（44 列）只显示 5 个按钮，港美按钮从 ths--ranking-hk-us-buttons 列起出现。"
+  (ths-test-with-dashboard
+    (ths-show-ranking)
+    (let ((runtime (etaf-runtime-for-buffer buffer)))
+      (dolist (width '(44 54 79 80))
+        (etaf-runtime-refit runtime width 24)
+        (dolist (ref '(rank-stock rank-etf rank-lof rank-change rank-amount))
+          (should (etaf-host-ref-position runtime ref)))
+        (if (>= width ths--ranking-hk-us-buttons)
+            (dolist (ref '(rank-hkstock rank-usstock))
+              (let ((pos (etaf-host-ref-position runtime ref)))
+                (should pos)
+                (should (= 3 (line-number-at-pos pos)))
+                (save-excursion
+                  (goto-char pos)
+                  (should (<= (+ (current-column) (car (etaf-host-ref-size runtime ref)))
+                              (1- width))))))
+          (should-not (etaf-host-ref-position runtime 'rank-hkstock))
+          (should-not (etaf-host-ref-position runtime 'rank-usstock)))))))
+
 ;;; ths-hkus-tests.el ends here

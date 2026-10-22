@@ -829,44 +829,62 @@ replaces cached data with invented values."
 
 (defun ths-data-ranking-universe (universe)
   "Validate UNIVERSE, defaulting nil to the A-share universe."
-  (unless (memq universe '(nil stock etf lof))
+  (unless (memq universe '(nil stock etf lof hkstock usstock))
     (error "无效排行类别: %s" universe))
   (or universe 'stock))
 
 (defun ths-data-ranking-label (universe)
   "Return the display label for ranking UNIVERSE."
   (pcase (ths-data-ranking-universe universe)
-    ('stock "A 股") ('etf "ETF") ('lof "LOF")))
+    ('stock "A 股") ('etf "ETF") ('lof "LOF")
+    ('hkstock "港股") ('usstock "美股")))
 
 (defun ths-data--ranking-stock-symbol (code market)
   "Return the A-share symbol for CODE and Eastmoney MARKET, or nil.
 Check the market together with the trading code: 1.000001 is an index,
-whereas 0.000001 is a stock.  Fund, bond and index ranges are excluded."
-  (when (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
+whereas 0.000001 is a stock.  Fund, bond and index ranges are excluded.
+Eastmoney files Hong Kong stocks under market 116 with five-digit codes,
+so those map to the hk prefix while keeping their leading zeros."
+  (cond
+   ((and (eq market 116) (stringp code) (string-match-p "\\`[0-9]\\{5\\}\\'" code))
+    (concat "hk" code))
+   ((and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
     (cond
      ((and (eq market 1) (string-match-p "\\`\\(?:60\\|68\\)" code)) (concat "sh" code))
      ((and (eq market 0) (string-match-p "\\`\\(?:00[0-4]\\|30\\)" code)) (concat "sz" code))
-     ((and (eq market 0) (string-match-p "\\`\\(?:43\\|83\\|87\\|920\\)" code)) (concat "bj" code)))))
+     ((and (eq market 0) (string-match-p "\\`\\(?:43\\|83\\|87\\|920\\)" code)) (concat "bj" code))))))
 
 (defun ths-data--ranking-symbol (code market &optional universe)
-  "Return CODE's symbol in MARKET only when it belongs to UNIVERSE."
+  "Return CODE's symbol in MARKET only when it belongs to UNIVERSE.
+Hong Kong codes are five digits with leading zeros and US codes are letters
+with an optional dot, normalized to upper case."
   (setq universe (ths-data-ranking-universe universe))
-  (if (eq universe 'stock) (ths-data--ranking-stock-symbol code market)
-    (when (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
-      (cond
-       ((and (eq market 1)
-             (string-match-p (if (eq universe 'etf) "\\`5[123568]" "\\`50[126]") code))
-        (concat "sh" code))
-       ((and (eq market 0)
-             (string-prefix-p (if (eq universe 'etf) "15" "16") code))
-        (concat "sz" code))))))
+  (pcase universe
+    ('stock (ths-data--ranking-stock-symbol code market))
+    ('hkstock (when (and (stringp code) (string-match-p "\\`[0-9]\\{5\\}\\'" code))
+                (concat "hk" code)))
+    ('usstock (when (and (stringp code) (string-match-p "\\`[.A-Za-z]+\\'" code)
+                         (string-match-p "[A-Za-z]" code))
+                (concat "us" (upcase code))))
+    (_ (when (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
+         (cond
+          ((and (eq market 1)
+                (string-match-p (if (eq universe 'etf) "\\`5[123568]" "\\`50[126]") code))
+           (concat "sh" code))
+          ((and (eq market 0)
+                (string-prefix-p (if (eq universe 'etf) "15" "16") code))
+           (concat "sz" code)))))))
 
 (defun ths-data--ranking-url (sort page &optional fallback universe)
   "Return Eastmoney's UNIVERSE ranking URL for SORT and PAGE.
-Use the alternate node when FALLBACK is non-nil."
+Use the alternate node when FALLBACK is non-nil.  Eastmoney serves no
+Hong Kong or US ranking node, so those universes fail before any request
+instead of waiting for a timeout."
   (setq universe (ths-data-ranking-universe universe))
   (unless (and (memq sort '(change amount)) (integerp page) (> page 0))
     (error "无效排行参数: %s / %s" sort page))
+  (when (memq universe '(hkstock usstock))
+    (error "东财不提供港美排行榜: %s" universe))
   (concat (if fallback "https://push2.eastmoney.com/api/qt/clist/get"
             (pcase universe
               ('stock "https://82.push2.eastmoney.com/api/qt/clist/get")
@@ -938,19 +956,34 @@ The 60-day change (f24) is already a percentage.  Missing values remain nil."
                               (format-time-string "%F %T" (seconds-to-time stamp) 28800))))))))
 
 (defun ths-data--ranking-sina-url (sort page &optional count universe)
-  "Return Sina's UNIVERSE URL for SORT and PAGE, or COUNT endpoint."
+  "Return Sina's UNIVERSE URL for SORT and PAGE, or COUNT endpoint.
+Hong Kong uses the bare-array market center service and its own count
+endpoint; US uses the JSONP category service whose payload carries the
+total, so COUNT is ignored there and no separate count request is made."
   (setq universe (ths-data-ranking-universe universe))
   (unless (and (memq sort '(change amount)) (integerp page) (> page 0))
     (error "无效排行参数: %s / %s" sort page))
-  (let ((node (pcase universe ('stock "hs_a") ('etf "etf_hq_fund") ('lof "lof_hq_fund"))))
-    (concat "https://vip.stock.finance.sina.com.cn/quotes_service/api/"
-            (if (or count (eq universe 'stock))
-                "json_v2.php/Market_Center."
-              "jsonp.php/thsFundRank/Market_Center.")
-            (if count (concat "getHQNodeStockCount?node=" node)
-              (format "%s?page=%d&num=%d&sort=%s&asc=0&node=%s&symbol=&_s_r_a=page"
-                      (if (eq universe 'stock) "getHQNodeData" "getHQNodeDataSimple")
-                      page ths-data-ranking-page-size (if (eq sort 'amount) "amount" "changepercent") node)))))
+  (pcase universe
+    ('hkstock
+     (concat "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center."
+             (if count "getHKStockCount?node=qbgg_hk"
+               (format "getHKStockData?page=%d&num=%d&sort=%s&asc=0&node=qbgg_hk"
+                       page ths-data-ranking-page-size
+                       (if (eq sort 'amount) "amount" "changepercent")))))
+    ('usstock
+     (concat "https://stock.finance.sina.com.cn/usstock/api/jsonp_v2.php/var%20t=/US_CategoryService.getList"
+             (format "?page=%d&num=%d&sort=%s&asc=0&market=&id="
+                     page ths-data-ranking-page-size (if (eq sort 'amount) "amount" "chg"))))
+    (_
+     (let ((node (pcase universe ('stock "hs_a") ('etf "etf_hq_fund") ('lof "lof_hq_fund"))))
+       (concat "https://vip.stock.finance.sina.com.cn/quotes_service/api/"
+               (if (or count (eq universe 'stock))
+                   "json_v2.php/Market_Center."
+                 "jsonp.php/thsFundRank/Market_Center.")
+               (if count (concat "getHQNodeStockCount?node=" node)
+                 (format "%s?page=%d&num=%d&sort=%s&asc=0&node=%s&symbol=&_s_r_a=page"
+                         (if (eq universe 'stock) "getHQNodeData" "getHQNodeDataSimple")
+                         page ths-data-ranking-page-size (if (eq sort 'amount) "amount" "changepercent") node)))))))
 
 (defun ths-data--ranking-sina-count (text)
   "Parse Sina's stock count TEXT, rejecting empty or invalid totals."
@@ -958,8 +991,8 @@ The 60-day change (f24) is already a percentage.  Missing values remain nil."
     (unless (and (integerp count) (> count 0)) (error "新浪排行榜响应缺少有效总数"))
     count))
 
-(defun ths-data--ranking-sina-parse (text sort page total &optional universe)
-  "Normalize Sina UNIVERSE ranking TEXT for SORT, PAGE and TOTAL.
+(defun ths-data--ranking-sina-listed-parse (text sort page total &optional universe)
+  "Normalize Sina's A-share or listed-fund ranking TEXT for SORT, PAGE and TOTAL.
 Volumes are shares, amount is yuan, and nmc is float market cap in 10,000 yuan.
 Sina does not provide the 60-day percentage change in this endpoint."
   (setq universe (ths-data-ranking-universe universe))
@@ -1016,17 +1049,127 @@ Sina does not provide the 60-day percentage change in this endpoint."
     (list :universe universe :sort sort :page page :total total :source 'sina :fetched-at (float-time)
           :rows (nreverse result))))
 
+(defun ths-data--ranking-sina-hk-parse (text sort page total)
+  "Normalize Sina's Hong Kong ranking TEXT for SORT, PAGE and TOTAL.
+The endpoint answers with a bare JSON array whose records are string
+fields: symbol is a five-digit code with leading zeros, lasttrade is the
+latest price, changepercent is the percentage change and amount is the
+turnover in HKD.  Turnover rate, float market cap and the 60-day change are
+absent here and stay nil rather than being filled with invented numbers."
+  (setq text (ths-data--sina-json-body text))
+  (unless (string-match-p "\\`[ \t\r\n]*\\[" text)
+    (error "新浪港股排行榜响应不是股票列表"))
+  (let* ((rows (ths-data--json text))
+         (offset (* (1- page) ths-data-ranking-page-size)) seen result)
+    (unless (and (integerp total) (> total 0)
+                 (= (length rows) (min ths-data-ranking-page-size (max 0 (- total offset)))))
+      (error "新浪港股排行榜响应条目不完整"))
+    (cl-loop for row in rows for rank from (1+ offset) do
+             (let* ((code (ths-data--get row "symbol"))
+                    (name (ths-data--get row "name"))
+                    (symbol (and (stringp code) (ths-data--ranking-symbol code nil 'hkstock))))
+               (unless symbol
+                 (signal 'ths-data-ranking-universe-error (list (format "%s" code))))
+               (unless (and (stringp name) (not (string-empty-p name)))
+                 (error "新浪港股排行榜含无效股票"))
+               (when (member symbol seen) (error "新浪港股排行榜含重复证券: %s" symbol))
+               (push symbol seen)
+               (push (list :rank rank :code code :symbol symbol :name name
+                           :price (ths-data--positive (ths-data--get row "lasttrade"))
+                           :change (ths-data-number (ths-data--get row "changepercent"))
+                           :volume (ths-data-number (ths-data--get row "volume"))
+                           :amount (ths-data-number (ths-data--get row "amount"))
+                           :turnover nil
+                           :float-cap nil
+                           :change-60d nil
+                           :close (ths-data--positive (ths-data--get row "prevclose"))
+                           :high (ths-data--positive (ths-data--get row "high"))
+                           :low (ths-data--positive (ths-data--get row "low"))
+                           :open (ths-data--positive (ths-data--get row "open"))
+                           :time (ths-data--get row "ticktime")) result)))
+    (list :universe 'hkstock :sort sort :page page :total total :source 'sina
+          :fetched-at (float-time) :rows (nreverse result))))
+
+(defun ths-data--ranking-sina-us-parse (text sort page)
+  "Normalize Sina's US ranking TEXT for SORT and PAGE, returning its total.
+The response is JSONP: a block comment, then `var t=({...});' whose object
+carries count and data, so the total never needs a second request.  price,
+chg (a percentage) and volume are present while the turnover amount,
+turnover rate, float market cap and the 60-day change are not, so those
+keys stay nil instead of being filled with invented numbers."
+  (let ((text (ths-data--sina-json-body text)))
+    (unless (string-match-p "\\`[ \t\r\n]*{" text)
+      (let ((open (string-match "(" text))
+            (close (string-match ")[ \t\r\n]*;?[ \t\r\n]*\\'" text)))
+        (unless (and open close (< open close))
+          (error "新浪美股排行榜响应不是榜单对象"))
+        (setq text (string-trim (substring text (1+ open) close)))))
+    (unless (string-match-p "\\`{" text)
+      (error "新浪美股排行榜响应不是榜单对象"))
+    (let* ((body (ths-data--json text))
+           (total (ths-data-number (ths-data--get body "count")))
+           (rows (ths-data--get body "data"))
+           (offset (* (1- page) ths-data-ranking-page-size)) seen result)
+      (unless (and (integerp total) (> total 0))
+        (error "新浪美股排行榜响应缺少有效总数"))
+      (unless (and (listp rows)
+                   (= (length rows) (min ths-data-ranking-page-size (max 0 (- total offset)))))
+        (error "新浪美股排行榜响应条目不完整"))
+      (cl-loop for row in rows for rank from (1+ offset) do
+               (let* ((code (ths-data--get row "symbol"))
+                      (name (or (ths-data--get row "cname") (ths-data--get row "name")))
+                      (symbol (and (stringp code) (ths-data--ranking-symbol code nil 'usstock))))
+                 (unless symbol
+                   (signal 'ths-data-ranking-universe-error (list (format "%s" code))))
+                 (unless (and (stringp name) (not (string-empty-p name)))
+                   (error "新浪美股排行榜含无效股票"))
+                 (when (member symbol seen) (error "新浪美股排行榜含重复证券: %s" symbol))
+                 (push symbol seen)
+                 (push (list :rank rank :code (upcase code) :symbol symbol :name name
+                             :price (ths-data--positive (ths-data--get row "price"))
+                             :change (ths-data-number (ths-data--get row "chg"))
+                             :volume (ths-data-number (ths-data--get row "volume"))
+                             :amount nil
+                             :turnover nil
+                             :float-cap nil
+                             :change-60d nil
+                             :close (ths-data--positive (ths-data--get row "preclose"))
+                             :high (ths-data--positive (ths-data--get row "high"))
+                             :low (ths-data--positive (ths-data--get row "low"))
+                             :open (ths-data--positive (ths-data--get row "open"))
+                             :time nil) result)))
+      (list :universe 'usstock :sort sort :page page :total total :source 'sina
+            :fetched-at (float-time) :rows (nreverse result)))))
+
+(defun ths-data--ranking-sina-parse (text sort page total &optional universe)
+  "Dispatch Sina's ranking TEXT to the parser of UNIVERSE.
+A-share and listed-fund responses keep their original parser; Hong Kong
+answers with a bare array and a separate count request, while US answers
+with JSONP that carries its own total, so TOTAL is ignored there."
+  (pcase (ths-data-ranking-universe universe)
+    ('hkstock (ths-data--ranking-sina-hk-parse text sort page total))
+    ('usstock (ths-data--ranking-sina-us-parse text sort page))
+    (_ (ths-data--ranking-sina-listed-parse text sort page total universe))))
+
 (defun ths-data-fetch-ranking (sort page callback &optional universe)
   "Fetch UNIVERSE ranking SORT and PAGE; return a cancellation function.
 CALLBACK receives the parsed ranking and error.  Providers use market-wide
-server sorting, independently of `ths-data-symbols'."
+server sorting, independently of `ths-data-symbols'.  Hong Kong and US
+rankings have no Eastmoney node; Hong Kong counts through Sina's own
+endpoint, while the US JSONP body already carries its total."
   (setq universe (ths-data-ranking-universe universe))
   (unless (and (memq sort '(change amount)) (integerp page) (> page 0))
     (error "无效排行参数: %s / %s" sort page))
   (let ((nodes (cl-loop for provider in ths-data-ranking-providers append
-                       (pcase provider ('eastmoney '((eastmoney) (eastmoney . t)))
-                              ('sina '((sina . count)))
-                              (_ (error "无效排行榜数据源: %s" provider)))))
+                       (pcase provider
+                         ('eastmoney
+                          (unless (memq universe '(hkstock usstock))
+                            '((eastmoney) (eastmoney . t))))
+                         ('sina
+                          (pcase universe
+                            ('usstock '((sina . data)))
+                            (_ '((sina . count)))))
+                         (_ (error "无效排行榜数据源: %s" provider)))))
         total cancel cancelled done (generation 0) failures)
     (cl-labels
         ((next ()
