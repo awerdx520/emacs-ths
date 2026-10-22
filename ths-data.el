@@ -32,6 +32,48 @@
   "Stock/fund symbols to show, with market prefixes (of for OTC funds)."
   :type '(repeat string) :group 'ths)
 (defconst ths-data-index-symbols '("sh000001" "sz399001" "sz399006"))
+(defconst ths-data-markets
+  '(("sh" :prefix "sh" :label "沪A" :fund-label "沪基" :decimals 2 :fund-decimals 3
+     :volume-unit "手" :currency "CNY" :book-levels 5 :minutes 240
+     :segments ((570 . 690) (780 . 900)) :amount-scale 10000.0
+     :secid-prefix "1." :timestamp compact :trades t :average-line t)
+    ("sz" :prefix "sz" :label "深A" :fund-label "深基" :decimals 2 :fund-decimals 3
+     :volume-unit "手" :currency "CNY" :book-levels 5 :minutes 240
+     :segments ((570 . 690) (780 . 900)) :amount-scale 10000.0
+     :secid-prefix "0." :timestamp compact :trades t :average-line t)
+    ("bj" :prefix "bj" :label "京A" :fund-label nil :decimals 2 :fund-decimals 3
+     :volume-unit "手" :currency "CNY" :book-levels 5 :minutes 240
+     :segments ((570 . 690) (780 . 900)) :amount-scale 10000.0
+     :secid-prefix "0." :timestamp compact :trades t :average-line t)
+    ("of" :prefix "of" :label "场外基金" :fund-label nil :decimals 4 :fund-decimals 4
+     :volume-unit nil :currency "CNY" :book-levels 0 :minutes nil :segments nil
+     :amount-scale 1.0 :secid-prefix nil :timestamp nil :trades nil :average-line nil)
+    ("hk" :prefix "hk" :label "港股" :index-label "港股指数" :fund-label nil :decimals 3
+     :fund-decimals 3 :volume-unit "股" :currency "HKD" :book-levels 1 :minutes 330
+     :segments ((570 . 720) (780 . 960)) :amount-scale 1.0 :secid-prefix "116."
+     :timestamp hk :trades nil :average-line t)
+    ("us" :prefix "us" :label "美股" :index-label "美股指数" :fund-label nil :decimals 2
+     :fund-decimals 2 :volume-unit "股" :currency "USD" :book-levels 1 :minutes 390
+     :segments ((570 . 960)) :amount-scale 1.0 :secid-prefix nil
+     :timestamp us :trades nil :average-line nil))
+  "Market profiles keyed by symbol prefix; the single source of market facts.
+:minutes is the elapsed trading minutes and doubles as the chart scaling
+divisor; :segments lists the intraday sessions as minutes after midnight.")
+
+(defun ths-data--market-symbol (symbol)
+  "Return SYMBOL as a string, accepting a stock plist as well."
+  (if (listp symbol) (plist-get symbol :symbol) symbol))
+
+(defun ths-data-market-key (symbol)
+  "Return SYMBOL's two-letter market prefix, or nil when too short."
+  (let ((value (ths-data--market-symbol symbol)))
+    (and (stringp value) (>= (length value) 2)
+         (downcase (substring value 0 2)))))
+
+(defun ths-data-market (symbol)
+  "Return SYMBOL's market profile plist, or nil when unrecognized."
+  (cdr (assoc (ths-data-market-key symbol) ths-data-markets)))
+
 (defconst ths-data-trades-count 12 "Maximum recent trade records per stock.")
 (defconst ths-data--metadata
   '(("sz300033" "同花顺" "金融科技") ("sz300750" "宁德时代" "电池")
@@ -45,11 +87,24 @@
 (defvar-local ths-data-indices nil "Last successful index snapshots in this buffer.")
 
 (defun ths-data-symbol (symbol)
-  "Validate and normalize a market-qualified SYMBOL."
-  (let ((value (downcase (string-trim symbol))))
-    (unless (string-match-p "\\`\\(?:sh\\|sz\\|bj\\|of\\)[0-9]\\{6\\}\\'" value)
-      (error "代码须含市场前缀，例如 sz300033 或 of005827: %s" symbol))
-    value))
+  "Validate and normalize a market-qualified SYMBOL.
+The prefix decides the code format: sh/sz/bj/of take six digits, hk takes
+five digits with leading zeros kept, and us takes a letter code that is
+upcased so that `usaapl' and `usAAPL' name the same stock."
+  (let* ((value (string-trim symbol))
+         (key (and (>= (length value) 2) (downcase (substring value 0 2))))
+         (code (and key (substring value 2))))
+    (cond
+     ((and (member key '("sh" "sz" "bj" "of"))
+           (string-match-p "\\`[0-9]\\{6\\}\\'" code))
+      (downcase value))
+     ((and (equal key "hk") (string-match-p "\\`[0-9]\\{5\\}\\'" code))
+      (concat "hk" code))
+     ((and (equal key "us") (string-match-p "\\`[A-Za-z.]+\\'" code)
+           (string-match-p "[A-Za-z]" code))
+      (concat "us" (upcase code)))
+     (t (error "代码须含市场前缀，例如 sz300033、hk00700 或 usAAPL: %s"
+               symbol)))))
 
 (defun ths-data-otc-p (stock)
   "Return non-nil for an off-exchange fund STOCK."
@@ -72,35 +127,40 @@ This recognizes code ranges, not whether an individual fund is listed."
 
 (defun ths-data-fund-p (stock)
   "Return non-nil when STOCK has an ETF/LOF trading symbol."
-  (let ((symbol (plist-get stock :symbol)))
-    (and (stringp symbol) (= (length symbol) 8)
-         (equal (substring symbol 0 2)
-                (ths-data-fund-market (substring symbol 2))))))
+  (let* ((symbol (plist-get stock :symbol))
+         (key (and (stringp symbol) (ths-data-market-key symbol))))
+    (and (member key '("sh" "sz"))
+         (equal key (ths-data-fund-market (ths-data-symbol-id symbol))))))
 
 (defun ths-data-format-price (stock value &optional signed)
-  "Format VALUE for STOCK: two decimals, three for ETF/LOF, four for OTC.
+  "Format VALUE for STOCK; decimals come from the market profile.
 SIGNED includes a sign for price changes.  Missing values stay unavailable."
   (if (numberp value)
-      (format (if (ths-data-otc-p stock)
-                  (if signed "%+.4f" "%.4f")
-                (if (ths-data-fund-p stock)
-                  (if signed "%+.3f" "%.3f")
-                (if signed "%+.2f" "%.2f")))
-              value)
+      (let* ((market (ths-data-market stock))
+             (decimals (or (and market (if (ths-data-fund-p stock)
+                                           (plist-get market :fund-decimals)
+                                         (plist-get market :decimals)))
+                           2)))
+        (format (format (if signed "%%+.%df" "%%.%df") decimals) value))
     "--"))
 
 (defun ths-data-placeholder (symbol)
   "Return metadata for SYMBOL with no invented quote values."
   (setq symbol (ths-data-symbol symbol))
-  (let ((meta (assoc symbol ths-data--metadata))
-        (fund (ths-data-fund-p (list :symbol symbol)))
-        (otc (string-prefix-p "of" symbol)))
+  (let* ((meta (assoc symbol ths-data--metadata))
+         (market (ths-data-market symbol))
+         (fund (ths-data-fund-p (list :symbol symbol)))
+         (otc (string-prefix-p "of" symbol)))
     (list :symbol symbol :code (substring symbol 2)
           :name (or (nth 1 meta) (substring symbol 2))
           :sector (or (nth 2 meta) (cond (otc "场外基金") (fund "场内基金") (t "--")))
-          :market-label (if otc "场外基金" (if fund (if (string-prefix-p "sh" symbol) "沪基" "深基")
-                          (pcase (substring symbol 0 2)
-                            ("sh" "沪A") ("sz" "深A") (_ "京A")))))))
+          :market-label (cond (otc (plist-get market :label))
+                              (fund (or (plist-get market :fund-label)
+                                        (plist-get market :label)))
+                              ((member symbol ths-data-index-symbols)
+                               (or (plist-get market :index-label)
+                                   (plist-get market :label)))
+                              (t (plist-get market :label))))))
 
 (defun ths-data-change (stock)
   "Return percentage change for STOCK, or nil if unavailable.

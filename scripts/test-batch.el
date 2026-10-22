@@ -4,12 +4,12 @@
 
 ;; `make check' 的第二步：在 `emacs -Q --batch' 下离线跑全部 ERT 用例。
 ;;
-;; 显式加载 11 个文件，顺序固定：
+;; 显式加载 12 个文件，顺序固定：
 ;;
 ;;   1. `tests/ths-tests.el' —— 公共宏 `ths-test-with-dashboard' 与辅助函数
 ;;      `ths-test-press' / `ths-test-visible' 定义在这里；它内部用
 ;;      `load-file-name' 自动加载 `tests/ths-fixtures.el'，故夹具不必在此重复加载。
-;;   2. 其余 10 个含 `ert-deftest' 的文件。
+;;   2. 其余 11 个含 `ert-deftest' 的文件。
 ;;
 ;; 为什么显式前置 `ths-tests.el'（加固，不是必需）：`-l' 解释执行下
 ;; `ert-deftest' 只把 body 包进 `(lambda () ...)'，宏在测试运行时才展开，
@@ -31,6 +31,7 @@
     "tests/ths-data-tests.el"
     "tests/ths-fund-ranking-tests.el"
     "tests/ths-gui-tests.el"
+    "tests/ths-hkus-tests.el"
     "tests/ths-layout-tests.el"
     "tests/ths-otc-tests.el"
     "tests/ths-ranking-tests.el"
@@ -38,7 +39,7 @@
     "tests/ths-trades-tests.el"
     "tests/ths-volume-tests.el"
     "tests/ths-watchlist-tests.el")
-  "显式加载的 ERT 文件（11 个；`ths-tests.el' 必须在首位）。")
+  "显式加载的 ERT 文件（12 个；`ths-tests.el' 必须在首位）。")
 
 (dolist (rel ths-test--files)
   (load (expand-file-name rel ths-test--root) nil t))

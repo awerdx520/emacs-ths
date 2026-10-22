@@ -9,8 +9,10 @@
   :type '(choice (const nil) file) :group 'ths)
 
 (defun ths-watchlist-symbol (input)
-  "Normalize stock or ETF/LOF INPUT, inferring the market from trading codes."
-  (let ((value (downcase (string-trim input))))
+  "Normalize stock, ETF/LOF, Hong Kong or US INPUT into a market symbol.
+Six-digit trading codes infer the A-share market from the leading digit;
+hk and us prefixes are handed to `ths-data-symbol' unchanged."
+  (let ((value (string-trim input)))
     (when (string-match-p "\\`[0-9]\\{6\\}\\'" value)
       (setq value (concat (or (ths-data-fund-market value)
                              (pcase (aref value 0)
@@ -18,10 +20,12 @@
                                ((or ?4 ?8 ?9) "bj")
                                (_ (user-error "无法识别市场，请输入 sh、sz 或 bj 前缀"))))
                          value)))
-    (unless (and (string-match-p "\\`\\(?:sh\\|sz\\|bj\\|of\\)[0-9]\\{6\\}\\'" value)
-                 (not (member value ths-data-index-symbols)))
-      (user-error "请输入股票／基金代码；场外基金使用 of 前缀，例如 of005827"))
-    value))
+    (when (string-match-p "\\`[0-9]\\{5\\}\\'" value)
+      (user-error "港股请输入 hk 前缀，例如 hk00700"))
+    (let ((symbol (condition-case nil (ths-data-symbol value) (error nil))))
+      (unless (and symbol (not (member symbol ths-data-index-symbols)))
+        (user-error "请输入股票／基金代码；场外基金用 of 前缀，港股用 hk，美股用 us，例如 of005827、hk00700、usAAPL"))
+      symbol)))
 
 (defun ths-watchlist-load ()
   "Read saved symbols without evaluating file content.

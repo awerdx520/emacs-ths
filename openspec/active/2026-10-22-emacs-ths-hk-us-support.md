@@ -6,8 +6,8 @@
 - 已确认：方案 ✅（用户 2026-10-22 确认原方案含 4 项取舍 + 迁移与 11 项修订），计划 ✅（用户 2026-10-22 确认；plan-reviewer 两轮独立审查：第一轮 blocking 经实测证伪并转为加固、第二轮 blocking 已修复）
 - 工件归属：本计划 2026-10-22 从 `~/thomas-emacs/openspec/active/` 迁入本仓库；thomas-emacs 侧只保留指针文件
 - 安全点：分支 `feat/hk-us-support` + tag `pre-hkus-baseline`
-- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ~ 任务8 待执行
-- 下一步：任务1（市场画像表与符号规范化：改 `ths-data.el` + `ths-watchlist.el`，建 `tests/ths-hkus-tests.el` 符号矩阵骨架）
+- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ~ 任务8 待执行
+- 下一步：任务2（报价解析与 provider 路由：`ths-data--url` secid 下沉、报价解析按市场分派、provider 顺序）
 
 ## 前置事实（实测 2026-10-22）
 
@@ -79,7 +79,7 @@
 
 | 属性 | sh / sz / bj | of（场外基金） | hk | us |
 |---|---|---|---|---|
-| 符号规则 | `sh` / `sz` / `bj` + 6 位数字 | `of` + 6 位数字 | `hk` + 5 位数字（含前导零，如 `hk00700`） | `us` + 字母代码（保留原始大小写，如 `usAAPL`；指数允许点号 `us.IXIC`） |
+| 符号规则 | `sh` / `sz` / `bj` + 6 位数字 | `of` + 6 位数字 | `hk` + 5 位数字（含前导零，如 `hk00700`） | `us` + 字母代码（`upcase` 归一，如 `usaapl` → `usAAPL`；指数允许点号 `us.IXIC`） |
 | 免前缀规则 | 6 位数字按首位补 sh / sz / bj | 不支持 | **不**自动补 `hk`（5 位数字不认） | 不支持 |
 | 交易时段 | 09:30-11:30 + 13:00-15:00 | 不适用（净值） | 09:30-12:00 + 13:00-16:00 | 09:30-16:00（美东，实测 `0930..1600`） |
 | 交易时段 elapsed 分钟数（**用于坐标缩放**） | 240（事实✓） | nil | 330（事实✓） | 390（事实✓） |
@@ -136,7 +136,7 @@
 | 沪A / 深A / 京A | 6 位数字 | `sh` / `sz` / `bj` + code | 现状不变 |
 | 沪基 / 深基 / 基金 / 场内基金 / ETF / LOF | 6 位数字 | 按 `ths-data-fund-market` 判市场 | 现状不变 |
 | 港股 | 5 位数字（含前导零） | `hk` + code | 新增：保留前导零，不做数字解析 |
-| 美股 | 字母代码 | `us` + code | 新增：保留原始大小写，只做前缀拼接 |
+| 美股 | 字母代码 | `us` + code | 新增：`upcase` 归一后拼前缀（不做 downcase） |
 | 指数 / 粉单 / 债券 / 期货 / 期权 / 概念 | 任意 | 忽略 | 非目标，不入结果（与现状一致） |
 
 ### ⑥ 显式非目标
@@ -177,16 +177,16 @@
   - 验收标准：`make -n check` / `make -n run` / `make -n live-check` 三条均无报错；`make check` 在**未改动任何源码**的基线上返回 0，输出含 `Ran 124 tests` 与 `0 unexpected`；运行后 `git status --short` 不出现任何 `.elc`；人为制造一条 warning（用 `/tmp` 临时副本，不得污染仓库）时 `make check` 必须返回非零。`scripts/test-batch.el` 必须先加载 `tests/ths-tests.el`（自检方式：`grep -c "ths-tests.el" scripts/test-batch.el` 应 ≥ 1）。
   - 依赖：无
 
-- [ ] 任务1：市场画像表与符号规范化
-  - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths-watchlist.el`（修改）、`/home/thomas/Workspace/emacs-ths/tests/ths-hkus-tests.el`（**创建**，先落符号矩阵骨架用例；任务7 扩充同一文件，禁止并行编辑）
+- [x] 任务1：市场画像表与符号规范化
+  - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths-watchlist.el`（修改）、`/home/thomas/Workspace/emacs-ths/tests/ths-hkus-tests.el`（**创建**，先落符号矩阵骨架用例；任务7 扩充同一文件，禁止并行编辑）、`/home/thomas/Workspace/emacs-ths/scripts/test-batch.el`（修改：新测试文件加入显式加载清单，否则 `make check` 不会运行新用例——任务0 的清单遗漏，任务1 补齐）
   - 步骤：
     - 在 `ths-data.el:34`（`ths-data-index-symbols` 所在处）附近新增 `ths-data-markets`（6 个市场画像的 alist，字段见「设计 ①」）与访问器 `ths-data-market`、`ths-data-market-key`。
-    - 改 `ths-data-symbol`（grep 锚点 `(defun ths-data-symbol `，`ths-data.el:47`）：正则放行 `hk` + 5 位、`us` + 字母（允许点号），`us` 保留原始大小写（downcase 仅用于比较）。
+    - 改 `ths-data-symbol`（grep 锚点 `(defun ths-data-symbol `，`ths-data.el:47`）：正则放行 `hk` + 5 位、`us` + 字母（允许点号），`us` 段统一 `upcase` 归一（禁止 `downcase`；`usaapl`→`usAAPL`、`us.ixic`→`us.IXIC`）。
     - 改 `ths-data-symbol-id`（`ths-data.el:58`）与 `ths-data-fund-p`（`ths-data.el:73`，`(= (length symbol) 8)` 固定长度假设）为按画像分派。
     - 改 `ths-data-format-price`（`ths-data.el:80`）小数位来源为画像 `:decimals`，删除 otc/fund/其他三分支判断。
     - 改 `ths-data-placeholder`（`ths-data.el:92`，`market-label` 的 `pcase (substring symbol 0 2)`）标签来自画像 `:label`，补 港股 / 美股 / 港股指数 / 美股指数。
     - 改 `ths-watchlist-symbol`（`ths-watchlist.el:11`）：`hk` / `us` 前缀放行复用 `ths-data-symbol`；6 位数字免前缀仍按首位补 A 股；5 位数字 `user-error` 提示补 `hk` 前缀；保留 `ths-data-index-symbols` 排除逻辑。
-  - 验收标准：ERT `ths-symbol-matrix`（新增，6 类合法 + 8 类非法输入逐一断言）；`make check` 中 `tests/ths-watchlist-tests.el` 既有断言（含 `ths-watchlist-tests.el:13` 的非法输入表）全绿。
+  - 验收标准：ERT `ths-symbol-matrix`（新增，9 类合法 + 9 类非法输入逐一断言）；`make check` 中 `tests/ths-watchlist-tests.el` 既有断言（含 `ths-watchlist-tests.el:13` 的非法输入表）全绿。
   - 依赖：无
 
 - [ ] 任务2：报价解析与 provider 路由
@@ -223,7 +223,7 @@
     - 确认 `ths-watchlist-symbol`（`ths-watchlist.el:11`）与任务1 的画像校验共用同一入口（不重复写正则），并保证 `ths-watchlist-load`（`:26`）/`ths-watchlist-save`（`:39`）的 JSON 数组格式不变。
     - 改 `ths-search--label`（`ths-search.el:17`，兜底 `pcase (substring (plist-get stock :symbol) 0 2)` 只有 sh/sz/_）为查画像 `:label`；`ths-search--local`（`:25`）/`ths-search--update`（`:116`）在请求前剥掉用户重复输入的 `hk` / `us` 前缀。
     - 改 `ths-data--search-parse`（`ths-data.el:736`）：market→prefix 映射（`ths-data.el:746` 的 `(cdr (assoc market '(("沪A" . "sh") ...)))`）增加 `港股 → hk`、`美股 → us`。
-    - 改同函数 code 校验（`ths-data.el:757` 的 `(string-match-p "\\`[0-9]\\{6\\}\\'" code)`）为按画像分派：A 股 6 位数字、港股 5 位数字（保留前导零）、美股字母（保留大小写）。
+    - 改同函数 code 校验（`ths-data.el:757` 的 `(string-match-p "\\`[0-9]\\{6\\}\\'" code)`）为按画像分派：A 股 6 位数字、港股 5 位数字（保留前导零）、美股字母（`upcase` 归一）。
     - 确认 `ths-data-fetch`（`:455`）对 `hk` / `us` 不进 `ths-data--fund-fetch` 分支，`ths-data-otc-p`（`:54`）只认 `of`。
   - 验收标准：新增 ERT `ths-search-hk-us-symbols`（`00700` + 港股 → `hk00700`；`AAPL` + 美股 → `usAAPL`；`350` 之类 5 位输入仍被拒）。
   - 既有用例处理（与任务7 一致，不得两头写不同目标）：`tests/ths-search-tests.el:41` 的 deftest `ths-search-funds-require-trading-code-and-compatible-market` 输入样本中含 `("00700" . "港股")`，并断言 `(cl-every #'ths-data-fund-p rows)`——港美支持后 `hk00700` 会进入结果从而破坏该断言。因此**把该港美样本从这条基金测试的输入中移除**，`:56` 期望列表保持 `("sh510300" "sz159915" "sh501018" "sz161725")` 四个 symbol、`cl-every fund-p` 断言保持原样；港美映射改由新增用例 `ths-search-hk-us-symbols` 覆盖。**不采用「把期望列表扩成五个或六个 symbol」的写法。**
