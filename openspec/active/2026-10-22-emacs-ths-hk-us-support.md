@@ -6,8 +6,8 @@
 - 已确认：方案 ✅（用户 2026-10-22 确认原方案含 4 项取舍 + 迁移与 11 项修订），计划 ✅（用户 2026-10-22 确认；plan-reviewer 两轮独立审查：第一轮 blocking 经实测证伪并转为加固、第二轮 blocking 已修复）
 - 工件归属：本计划 2026-10-22 从 `~/thomas-emacs/openspec/active/` 迁入本仓库；thomas-emacs 侧只保留指针文件
 - 安全点：分支 `feat/hk-us-support` + tag `pre-hkus-baseline`
-- 进度：任务0 ~ 任务8 全部待执行（每完成一个任务即勾选并更新本行）
-- 下一步：任务0（Makefile + 严格编译驱动 + ERT runner），目标为基线 `make check` 绿
+- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ~ 任务8 待执行
+- 下一步：任务1（市场画像表与符号规范化：改 `ths-data.el` + `ths-watchlist.el`，建 `tests/ths-hkus-tests.el` 符号矩阵骨架）
 
 ## 前置事实（实测 2026-10-22）
 
@@ -163,15 +163,16 @@
 
 执行顺序（严格串行，同一文件禁止并行编辑）：任务0 → 任务1 → 任务2 → 任务3 → 任务4 → 任务5 → 任务6 → 任务7 → 任务8。任务3 / 任务4 / 任务5 共享 `ths-data.el`，任务6 亦改 `ths-data.el`，四者一律按序执行。
 
-- [ ] 任务0：验证入口前置（Makefile + 严格编译驱动 + ERT runner）
-  - 文件：`/home/thomas/Workspace/emacs-ths/Makefile`（创建）、`/home/thomas/Workspace/emacs-ths/scripts/compile-strict.el`（创建）、`/home/thomas/Workspace/emacs-ths/scripts/test-batch.el`（创建）
+- [x] 任务0：验证入口前置（Makefile + 严格编译驱动 + ERT runner）
+  - 文件：`/home/thomas/Workspace/emacs-ths/Makefile`（创建）、`/home/thomas/Workspace/emacs-ths/scripts/boot.el`（创建）、`/home/thomas/Workspace/emacs-ths/scripts/compile-strict.el`（创建）、`/home/thomas/Workspace/emacs-ths/scripts/test-batch.el`（创建）
   - 步骤：
-    - 新建 `scripts/compile-strict.el`：把 `byte-compile-dest-file-function` 重定向到 `(make-temp-file "ths-elc-" t)` 生成的临时目录；`(setq byte-compile-error-on-warn t)`；对 7 个源文件逐个 `byte-compile-file`，**按返回值判失败**（`nil` 即失败，同时校验 `.elc` 存在性）；任一失败 → 打印文件名与失败原因 → `(kill-emacs 1)`；全部成功 → 打印摘要、删除临时目录、返回 0。
+    - 新建 `scripts/boot.el`（batch 依赖引导）：`(require 'package)` + 先 `(setq package-archives nil)` 再 `package-initialize`（纯离线，不建索引、不安装）；若 `(not (featurep 'etaf))` 则按顺序遍历通配目录（`~/.emacs.d/straight/build-*/*`、`~/.config/emacs/straight/build-*/*`、`~/*/.local/straight/build-*/*`、`~/*/straight/build-*/*`，目录存在才 `add-to-list 'load-path`），再 `(require 'etaf nil t)`；仍不可见则 `error` 并提示用 `LOAD=` 覆盖；成功打印 `boot: ETAF 就绪`。
+    - 新建 `scripts/compile-strict.el`：把 `byte-compile-dest-file-function` 重定向到 `(make-temp-file "ths-elc-" t)` 生成的临时目录；`(setq byte-compile-error-on-warn t)`；对 7 个源文件逐个 `byte-compile-file`，**按返回值判失败**（`nil` 即失败，同时校验 `.elc` 存在性；抛错型失败用 `condition-case` 转成失败项）；任一失败 → 打印文件名与失败原因 → `(kill-emacs 1)`；全部成功 → 打印摘要、删除临时目录、返回 0。
     - 新建 `scripts/test-batch.el`：**先 `load` `tests/ths-tests.el`**（该文件内部用 `load-file-name` 加载 `tests/ths-fixtures.el`，并定义公共宏 `ths-test-with-dashboard` 与辅助函数 `ths-test-press` / `ths-test-visible`），**再**加载其余 10 个含 `ert-deftest` 的测试文件（显式加载共 **11** 个 = `ths-tests.el` + 其余 10 个；`tests/ths-fixtures.el` 由 `ths-tests.el` 内部 `(load ...)` 自动加载，不在此显式加载；`tests/ths-live-check.el` 排除），最后调用 `ert-run-tests-batch-and-exit`。
       - 顺序约束依据（实测 2026-10-22）：`-l` 解释执行下 `ert-deftest` 只把 body 包进 `(lambda () ...)`，宏调用在**测试运行时**才展开，因此字母序加载与「宏使用者先于定义者」两种顺序都能跑通 `Ran 124 tests / 0 unexpected`；显式前置 `ths-tests.el` 属**加固**，用于防御将来把测试流程改成字节编译（那时缺宏只会产生警告，加载期会静默取到未展开宏的旧字节码）。
       - 明确不做：`make check` **不字节编译测试文件**（`tests/ths-trades-tests.el:101` 存在既存 free variable `buffer`，严格编译会失败，属既存噪声，不在本计划范围）。
-    - 新建 `Makefile`：`EMACS ?= emacs`；`LOAD ?=` 可被用户覆盖，默认通过内联 `--eval` 做依赖加载——先 `(require 'package)` + `package-initialize`，若 `(not (featurep 'etaf))` 则遍历通配目录（`~/.emacs.d/straight/build-*/*`、`~/.config/emacs/straight/build-*/*`、`~/*/.local/straight/build-*/*`）把目录加入 `load-path`，仍找不到则打印明确错误（提示用 `LOAD=` 覆盖）并失败退出。
-    - 三个目标：`check` = `$(EMACS) -Q --batch $(LOAD) -L . -L tests -l scripts/compile-strict.el` 后接 `$(EMACS) -Q --batch $(LOAD) -L . -L tests -l scripts/test-batch.el`（两个命令以 `&&` 串联，任一失败即整体失败）；`run` = `$(EMACS) -Q $(LOAD) -L . --eval "(progn (require 'ths) (ths))"`；`live-check` = `$(EMACS) -Q --batch $(LOAD) -L . -L tests -l tests/ths-live-check.el`。
+    - 新建 `Makefile`：`EMACS ?= emacs`；`LOAD ?=` 可被用户覆盖，默认通过 `scripts/boot.el` 做依赖引导——先 `(require 'package)` + `package-initialize`，若 `(not (featurep 'etaf))` 则遍历通配目录（`~/.emacs.d/straight/build-*/*`、`~/.config/emacs/straight/build-*/*`、`~/*/.local/straight/build-*/*`、`~/*/straight/build-*/*`）把目录加入 `load-path`，仍找不到则打印明确错误（提示用 `LOAD=` 覆盖）并失败退出（引导逻辑全部落在 `scripts/boot.el`）。
+    - 三个目标：`check` = `$(EMACS) -Q --batch $(LOAD) -L . -L tests -l scripts/compile-strict.el`，下一行 `$(EMACS) -Q --batch $(LOAD) -L . -L tests -l scripts/test-batch.el`（两个**独立命令行**：make 逐行执行且首行失败即整体停止，语义等价于 `&&` 串联，引号更安全）；`run` = `$(EMACS) -Q $(LOAD) -L . --eval "(progn (require 'ths) (ths))"`；`live-check` = `$(EMACS) -Q --batch $(LOAD) -L . -L tests -l tests/ths-live-check.el`。
     - Makefile 注释写明：为什么必须用 `scripts/compile-strict.el`（`byte-compile-error-on-warn` 不抛错 + batch 退出码恒 0 两个陷阱）。
   - 验收标准：`make -n check` / `make -n run` / `make -n live-check` 三条均无报错；`make check` 在**未改动任何源码**的基线上返回 0，输出含 `Ran 124 tests` 与 `0 unexpected`；运行后 `git status --short` 不出现任何 `.elc`；人为制造一条 warning（用 `/tmp` 临时副本，不得污染仓库）时 `make check` 必须返回非零。`scripts/test-batch.el` 必须先加载 `tests/ths-tests.el`（自检方式：`grep -c "ths-tests.el" scripts/test-batch.el` 应 ≥ 1）。
   - 依赖：无
