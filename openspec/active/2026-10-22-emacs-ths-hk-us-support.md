@@ -6,8 +6,8 @@
 - 已确认：方案 ✅（用户 2026-10-22 确认原方案含 4 项取舍 + 迁移与 11 项修订），计划 ✅（用户 2026-10-22 确认；plan-reviewer 两轮独立审查：第一轮 blocking 经实测证伪并转为加固、第二轮 blocking 已修复）
 - 工件归属：本计划 2026-10-22 从 `~/thomas-emacs/openspec/active/` 迁入本仓库；thomas-emacs 侧只保留指针文件
 - 安全点：分支 `feat/hk-us-support` + tag `pre-hkus-baseline`
-- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ~ 任务8 待执行
-- 下一步：任务2（报价解析与 provider 路由：`ths-data--url` secid 下沉、报价解析按市场分派、provider 顺序）
+- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ~ 任务8 待执行
+- 下一步：任务3（分时与日 K：`ths-data-minute-slot` 画像化、端点按市场分派、日 K 后缀回填）
 
 ## 前置事实（实测 2026-10-22）
 
@@ -79,7 +79,7 @@
 
 | 属性 | sh / sz / bj | of（场外基金） | hk | us |
 |---|---|---|---|---|
-| 符号规则 | `sh` / `sz` / `bj` + 6 位数字 | `of` + 6 位数字 | `hk` + 5 位数字（含前导零，如 `hk00700`） | `us` + 字母代码（`upcase` 归一，如 `usaapl` → `usAAPL`；指数允许点号 `us.IXIC`） |
+| 符号规则 | `sh` / `sz` / `bj` + 6 位数字 | `of` + 6 位数字 | `hk` + 5 位数字（含前导零，如 `hk00700`），或 `hk` + ≥2 位字母的指数代码（如 `hkHSI`、`hkHSCEI`，`upcase` 归一） | `us` + 字母代码（`upcase` 归一，如 `usaapl` → `usAAPL`；指数允许点号 `us.IXIC`） |
 | 免前缀规则 | 6 位数字按首位补 sh / sz / bj | 不支持 | **不**自动补 `hk`（5 位数字不认） | 不支持 |
 | 交易时段 | 09:30-11:30 + 13:00-15:00 | 不适用（净值） | 09:30-12:00 + 13:00-16:00 | 09:30-16:00（美东，实测 `0930..1600`） |
 | 交易时段 elapsed 分钟数（**用于坐标缩放**） | 240（事实✓） | nil | 330（事实✓） | 390（事实✓） |
@@ -189,7 +189,20 @@
   - 验收标准：ERT `ths-symbol-matrix`（新增，9 类合法 + 9 类非法输入逐一断言）；`make check` 中 `tests/ths-watchlist-tests.el` 既有断言（含 `ths-watchlist-tests.el:13` 的非法输入表）全绿。
   - 依赖：无
 
-- [ ] 任务2：报价解析与 provider 路由
+- [x] 任务2：报价解析与 provider 路由
+  - 前置探测（2026-10-22，本机 WSL2，`fetch` 直连；响应为 GB18030 编码，解析层已按 provider 解码）：
+
+    | 端点 | HTTP | 字段数 | 关键结构 |
+    |---|---|---|---|
+    | `https://qt.gtimg.cn/q=hk00700` | 200 | 78（`~` 分隔） | f1 腾讯控股 / f2 `00700` / f3 现价 / f4 昨收 / f5 开 / f30 `2026/10/22 15:13:16` / f33 高 / f34 低 / f37 `20022534991.300`（HKD 原值）/ f38 换手 / f9 买一价 / f19 卖一价（f10/f20 量恒 0） |
+    | `https://qt.gtimg.cn/q=usAAPL` | 200 | 73 | f2 `AAPL.OQ`（带交易所后缀）/ f30 `2026-10-21 16:00:01` / f37 `12221259717`（USD 原值）/ f35 币种 USD / 1 档盘口带真实量 |
+    | `https://qt.gtimg.cn/q=hkHSI` | 200 | 78 | f2 `HSI`（**无 `hk` 前缀**，与 `ths-data-symbol-id` 的 `HSI` 直接相等）；f30 同为港股格式 |
+    | `https://qt.gtimg.cn/q=us.IXIC` / `q=usDJI` / `q=us.INX` | 200 | 73 / 73 / 73 | f2 分别为 `.IXIC` / `.DJI` / `.INX`（**点号在前、无交易所后缀**），故美股 f2 比对需先剥前导点再取句点前段 |
+    | `https://hq.sinajs.cn/list=hk00700` | 200 | 19（`,` 分隔） | f0 TENCENT / f1 腾讯控股 / f2 开 / f3 昨收 / f4 高 / f5 低 / f6 现价 / f9 买一 / f10 卖一 / f11 额 / f12 量 / f17 `2026/10/22` / f18 `15:02`（无秒、无买卖量） |
+    | `https://hq.sinajs.cn/list=gb_aapl` | 200 | 36 | f0 苹果 / f1 现价 / f3 `2026-10-22 09:30:13` / f4 涨跌额 / f5 开 / f6 高 / f7 低 / f10 量 / **f26 昨收 339.5000**（等于 f1−f4，与腾讯 f4 一致）/ f30 额 `12223111721.0000`；无任何盘口字段 |
+    | `https://hq.sinajs.cn/list=usAAPL` | 200 | 0（`hq_str_usAAPL=""`） | **不可用**：新浪美股列表键是 `gb_` + 小写代码，`usAAPL` 形式返回空串 |
+
+    探测结论（已写回实现）：① 港美腾讯 `f37` 均为原币，倍数 1；A 股万元 → 倍数 10000。② 新浪美股 `f26` 就是昨收，`ths-data--parse` 的「昨收 + 名称」校验对港美无需放宽。③ 新浪美股无盘口 → `:book` 为 nil；新浪港股有买卖一价但无买卖一量 → 量为 nil。④ 腾讯美股 `f2` 的指数形态是前导点（`.IXIC`），实现按「剥前导点 → 取句点前段 + 后缀」处理，`AAPL.OQ` 的后缀仍回填 `:exchange-suffix`。⑤ 三个 provider（腾讯 / 新浪 / 东财）在探测中港美均可用（东财域名本机不可达，保留在顺序中只做离线覆盖），故港美报价顺序为 `tencent → sina → eastmoney`。
   - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）
   - 步骤：
     - 把 `ths-data--url`（`ths-data.el:331`，`(let ((secid (concat (if (string-prefix-p "sh" symbol) "1." "0.") ...`）的 secid 前缀下沉到画像 `:secid-prefix`，新增 `ths-data--eastmoney-secid`（hk → `116.`、us → `105.`/`106.`/`107.`）。
