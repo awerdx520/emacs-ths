@@ -6,8 +6,8 @@
 - 已确认：方案 ✅（用户 2026-10-22 确认原方案含 4 项取舍 + 迁移与 11 项修订），计划 ✅（用户 2026-10-22 确认；plan-reviewer 两轮独立审查：第一轮 blocking 经实测证伪并转为加固、第二轮 blocking 已修复）
 - 工件归属：本计划 2026-10-22 从 `~/thomas-emacs/openspec/active/` 迁入本仓库；thomas-emacs 侧只保留指针文件
 - 安全点：分支 `feat/hk-us-support` + tag `pre-hkus-baseline`
-- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ✅（分时与日 K：槽位画像化、端点按市场分派、港美取值路径与新浪日 K 兜底，141 tests 绿）；任务4 ~ 任务8 待执行
-- 下一步：任务4（自选与搜索：`ths-watchlist-symbol` 共用画像入口、搜索映射补港股/美股、`ths-data--search-parse` 按画像校验 code）
+- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ✅（分时与日 K：槽位画像化、端点按市场分派、港美取值路径与新浪日 K 兜底，141 tests 绿）；任务4 ✅（搜索港美映射与自选兼容，146 tests 绿）；任务5 ~ 任务8 待执行
+- 下一步：任务5（排行榜：universe 扩 5 类、新浪港美榜单端点、东财港美节点跳过）
 
 ## 前置事实（实测 2026-10-22）
 
@@ -239,7 +239,7 @@
     - 轴标签按画像 `:axis-label` 派生出「会话起/中点/止」（相邻两段共享边界写作 `A / B`）：A 股输出与改动前**逐字一致**（已实测比对 SVG 轴行），港 `09:30 10:45 12:00 / 13:00 14:30 16:00`、美 `09:30 12:45 16:00`。
   - 依赖：任务2
 
-- [ ] 任务4：自选与搜索
+- [x] 任务4：自选与搜索
   - 文件：`/home/thomas/Workspace/emacs-ths/ths-watchlist.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths-search.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）
   - 步骤：
     - 确认 `ths-watchlist-symbol`（`ths-watchlist.el:11`）与任务1 的画像校验共用同一入口（不重复写正则），并保证 `ths-watchlist-load`（`:26`）/`ths-watchlist-save`（`:39`）的 JSON 数组格式不变。
@@ -250,6 +250,14 @@
   - 验收标准：新增 ERT `ths-search-hk-us-symbols`（`00700` + 港股 → `hk00700`；`AAPL` + 美股 → `usAAPL`；`350` 之类 5 位输入仍被拒）。
   - 既有用例处理（与任务7 一致，不得两头写不同目标）：`tests/ths-search-tests.el:41` 的 deftest `ths-search-funds-require-trading-code-and-compatible-market` 输入样本中含 `("00700" . "港股")`，并断言 `(cl-every #'ths-data-fund-p rows)`——港美支持后 `hk00700` 会进入结果从而破坏该断言。因此**把该港美样本从这条基金测试的输入中移除**，`:56` 期望列表保持 `("sh510300" "sz159915" "sh501018" "sz161725")` 四个 symbol、`cl-every fund-p` 断言保持原样；港美映射改由新增用例 `ths-search-hk-us-symbols` 覆盖。**不采用「把期望列表扩成五个或六个 symbol」的写法。**
   - 依赖：任务1
+  - 实现记录（2026-10-22）：
+    - **code 校验不写第二份正则**：新增 `ths-data--search-symbol`，用 `(ths-data-symbol (concat prefix code))` 统一判定并归一（`hk` 5 位保留前导零、`us` upcase、A 股/基金 6 位），失败返回 nil 后仍报「股票搜索结果包含无效代码或名称」。因此港美格式与任务1 的 `ths-data-symbol` 天然一致，不存在两处正则漂移。
+    - **前缀剥离下沉到一处**：新增 `ths-search--strip-prefix`（A 股沿用原正则 `sh|sz|bj|of` + 数字，港美单独一条 `hk|us` + 字母/数字/点）。`ths-search--local` 与 `ths-search--request` 各自调用它，而 `ths-search--request` 是**唯一网络出口**，故 `ths-search--update` 无需重复剥离（其本地过滤经 `--local`、其请求经 `--request`，两处都已覆盖）。港美正则不与 A 股混写，避免把拼音查询（如 `shzg`）误剥成 `zg`。
+    - **`ths-search--local` 增加裸代码通道**：标签匹配（symbol / 名称 / 市场名 / 拼音）以外，再对 `:code` 做剥前缀后匹配，于是 `00700` 也能命中 `hk00700`；空查询保持「全匹配」语义（不破坏既有 `--update session ""` 断言）。
+    - **既有夹具冲突（计划未预料）**：`tests/ths-search-tests.el` 的共享夹具 `ths-search-test-response` 内本来就含一条 `("00700" . "港股")` 样本，港美映射生效后 `ths-search-parser-keeps-unique-mainland-stocks-and-listed-funds`（4 symbol 全等）与 `ths-search-request-encodes-query-and-propagates-errors`（`(= 4 (length result))`）会失败。处理方式：**只从夹具中删掉那一行样本**（未删任何断言、未改 `:expected-result`），港美映射改由 `tests/ths-hkus-tests.el` 的独立样本覆盖。
+    - **新增用例落在 `tests/ths-hkus-tests.el`**（而非任务4 原文写的 `ths-search-hk-us-symbols`）：`ths-hkus-search-maps-hk-us`、`ths-hkus-search-rejects-bad-codes`、`ths-hkus-watchlist-roundtrip`、`ths-hkus-search-label`、`ths-hkus-search-local-matches-hk-us`，共 5 条（146 tests / 0 unexpected）。
+    - **确认项实测**：`ths-data-fetch` 只对 `of` 前缀转 `ths-data--fund-fetch`（`ths-data.el:1170` 附近 `(string-prefix-p "of" symbol)`），`ths-data-otc-p` 只认 `of`，`ths-watchlist-save` 仍 `(json-serialize (vconcat symbols))` 写纯数组、`ths-watchlist-load` 仍按数组读 → 旧 JSON 直接可读。
+    - **发现的既有环境问题（非本任务引入）**：`tests/ths-tests.el:138` 与 `tests/ths-volume-tests.el` 两条用例在 `LANG=zh_CN.UTF-8` 下失败、`LANG=en_US.UTF-8` 下通过（宽字符宽度随 locale 变化）。用 `git worktree` 在 HEAD `172e20d` 基线上复现同样 3 条失败（141 tests / 3 unexpected），确认与本次改动无关；`make check` 需在 `LANG=en_US.UTF-8` 下运行才能拿到 exit 0。
 
 - [ ] 任务5：排行榜
   - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths.el`（修改）

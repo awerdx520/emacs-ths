@@ -1065,8 +1065,19 @@ server sorting, independently of `ths-data-symbols'."
           "?client=web&clientType=webSuggest&clientVersion=lastest&pageIndex=1&pageSize=20&keyword="
           (url-hexify-string (string-trim query))))
 
+(defun ths-data--search-symbol (prefix code)
+  "Return the market symbol for search PREFIX and CODE, or nil.
+The per-market code format comes from `ths-data-symbol', so Hong Kong keeps
+its five-digit leading zeros, US codes are upcased and A-share/fund codes
+stay six digits instead of a second regexp being maintained here."
+  (and (stringp code)
+       (condition-case nil (ths-data-symbol (concat prefix code)) (error nil))))
+
 (defun ths-data--search-parse (text)
-  "Parse code-table TEXT for mainland stocks and exchange-traded funds."
+  "Parse code-table TEXT for stocks and funds of every supported market.
+Mainland stocks and exchange-traded funds map as before; Eastmoney's 港股
+and 美股 rows map to the hk and us prefixes.  Rows of other security types
+\(indices, bonds, warrants) are ignored rather than guessed."
   (let* ((json (ths-data--json text)) (rows (ths-data--get json "result")) result)
     (unless (and (assq 'result json) (listp rows))
       (error "股票搜索响应缺少结果列表"))
@@ -1075,7 +1086,8 @@ server sorting, independently of `ths-data-symbols'."
              (code (ths-data--get row "code"))
              (fund-market (ths-data-fund-market code))
              (prefix
-              (or (cdr (assoc market '(("沪A" . "sh") ("深A" . "sz") ("京A" . "bj"))))
+              (or (cdr (assoc market '(("沪A" . "sh") ("深A" . "sz") ("京A" . "bj")
+                                       ("港股" . "hk") ("美股" . "us"))))
                   (and fund-market
                        (or (and (member market '("沪基" "沪基金" "沪市基金"))
                                 (equal fund-market "sh"))
@@ -1085,13 +1097,14 @@ server sorting, independently of `ths-data-symbols'."
                        fund-market))))
         (when prefix
           (let ((name (ths-data--get row "shortName"))
-                (pinyin (ths-data--get row "pinyin")))
-            (unless (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code)
+                (pinyin (ths-data--get row "pinyin"))
+                (symbol (ths-data--search-symbol prefix code)))
+            (unless (and symbol
                          (stringp name) (not (string-empty-p name))
                          (not (string-match-p "[\n\r\t]" name)))
               (error "股票搜索结果包含无效代码或名称"))
-            (unless (seq-find (lambda (stock) (equal (plist-get stock :symbol) (concat prefix code))) result)
-              (let ((stock (ths-data-placeholder (concat prefix code))))
+            (unless (seq-find (lambda (stock) (equal (plist-get stock :symbol) symbol)) result)
+              (let ((stock (ths-data-placeholder symbol)))
                 (setq stock (plist-put stock :name name))
                 (setq stock (plist-put stock :pinyin (if (stringp pinyin) pinyin "")))
                 (push stock result)))))))

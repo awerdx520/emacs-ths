@@ -391,4 +391,95 @@ qfqday，data 键带交易所后缀 usAAPL.OQ，行同样为数组。")
           (should (member (cons symbol 'daily) calls))
         (should-not (member (cons symbol 'daily) calls))))))
 
+;;; 任务4：搜索映射与自选兼容（东财 code-table 混合样本，离线构造，无网络请求）
+
+(defconst ths-hkus-test-search-response
+  (json-serialize
+   `((result . ,(vconcat
+                 (mapcar (lambda (row)
+                           `((code . ,(nth 0 row)) (shortName . ,(nth 1 row))
+                             (securityTypeName . ,(nth 2 row))))
+                         '(("00700" "腾讯控股" "港股")
+                           ("AAPL" "苹果" "美股")
+                           ("600519" "贵州茅台" "沪A")
+                           ("510300" "沪深300ETF" "沪基")
+                           ("AAPL" "苹果" "指数")   ; 同类不同名的非目标样本。
+                           ("IXIC" "纳斯达克" "指数") ; 指数必须整体丢弃。
+                           ("110001" "可转债" "债券")))))))
+  "东财 code-table 港美 / A 股 / 场内基金混合响应。
+含两条「指数」样本与一条「债券」样本，用于断言非目标类别不入结果。")
+
+(ert-deftest ths-hkus-search-maps-hk-us ()
+  "港股映射 hk 前缀并保留前导零，美股映射 us 并 upcase，非目标类别丢弃。"
+  (let* ((rows (ths-data--search-parse ths-hkus-test-search-response))
+         (symbols (mapcar (lambda (row) (plist-get row :symbol)) rows))
+         (hk (seq-find (lambda (row) (equal "hk00700" (plist-get row :symbol))) rows))
+         (us (seq-find (lambda (row) (equal "usAAPL" (plist-get row :symbol))) rows))
+         (share (seq-find (lambda (row) (equal "sh600519" (plist-get row :symbol))) rows))
+         (fund (seq-find (lambda (row) (equal "sh510300" (plist-get row :symbol))) rows)))
+    (should (equal '("hk00700" "usAAPL" "sh600519" "sh510300") symbols))
+    ;; 港股：代码保留 5 位前导零，标签来自画像。
+    (should (equal "00700" (plist-get hk :code)))
+    (should (equal "港股" (plist-get hk :market-label)))
+    (should (equal "腾讯控股" (plist-get hk :name)))
+    ;; 美股：代码为大写字母，标签来自画像。
+    (should (equal "AAPL" (plist-get us :code)))
+    (should (equal "美股" (plist-get us :market-label)))
+    ;; A 股与场内基金零回归。
+    (should (equal "沪A" (plist-get share :market-label)))
+    (should (equal "沪基" (plist-get fund :market-label)))
+    (should (ths-data-fund-p fund))
+    ;; 指数（IXIC）与债券（110001）不得进入结果。
+    (should-not (member "usIXIC" symbols))
+    (should-not (seq-find (lambda (row) (member (plist-get row :market-label) '("指数" "债券")))
+                          rows))))
+
+(ert-deftest ths-hkus-search-rejects-bad-codes ()
+  "港美 code 格式不合法时与该函数既有语义一致：整体报错。"
+  (dolist (case '(("007000" . "港股")  ; 港股必须 5 位。
+                  ("700" . "港股")     ; 位数不足。
+                  ("AA1" . "美股")     ; 美股不允许数字。
+                  ("bad" . "沪A")))    ; A 股零回归。
+    (should-error
+     (ths-data--search-parse
+      (format "{\"result\":[{\"code\":\"%s\",\"shortName\":\"坏样本\",\"securityTypeName\":\"%s\"}]}"
+              (car case) (cdr case)))
+     :type 'error)))
+
+(ert-deftest ths-hkus-watchlist-roundtrip ()
+  "自选保存并回读港美代码；旧格式（仅 A 股 / 场外基金）JSON 仍可直接读取。"
+  (let* ((file (make-temp-file "ths-watchlist-" nil ".json"))
+         (ths-watchlist-file file))
+    (unwind-protect
+        (progn
+          (ths-watchlist-save '("hk00700" "usAAPL" "sh600519"))
+          (should (equal '("hk00700" "usAAPL" "sh600519") (ths-watchlist-load)))
+          ;; 旧文件是纯字符串数组，格式未变 → 向后兼容。
+          (let ((coding-system-for-write 'utf-8-unix))
+            (with-temp-file file (insert "[\"sz300033\",\"of005827\"]")))
+          (should (equal '("sz300033" "of005827") (ths-watchlist-load))))
+      (delete-file file))))
+
+(ert-deftest ths-hkus-search-label ()
+  "候选标签的市场名来自画像：港美读 港股 / 美股，场内基金保留 沪基。"
+  (should (string-match-p "港股" (ths-search--label '(:symbol "hk00700"))))
+  (should (string-match-p "美股" (ths-search--label '(:symbol "usAAPL"))))
+  (should (string-match-p "沪基" (ths-search--label '(:symbol "sh510300"))))
+  ;; 无法识别的符号回退 --，不再按首两字符猜市场。
+  (should (string-match-p "--" (ths-search--label '(:symbol "xx000000")))))
+
+(ert-deftest ths-hkus-search-local-matches-hk-us ()
+  "本地过滤：带前缀 / 裸代码 / 市场名都能命中港美候选。"
+  (let ((session (ths-search--create :local (ths-data--search-parse ths-hkus-test-search-response))))
+    (dolist (case '(("hk00700" . "hk00700") ("00700" . "hk00700") ("港股" . "hk00700")
+                    ("usAAPL" . "usAAPL") ("aapl" . "usAAPL") ("美股" . "usAAPL")
+                    ("600519" . "sh600519")))
+      (should (member (cdr case)
+                      (mapcar (lambda (row) (plist-get row :symbol))
+                              (ths-search--local session (car case))))))
+    ;; 市场名互不串味：搜「港股」不会带出美股候选。
+    (should-not (member "usAAPL"
+                        (mapcar (lambda (row) (plist-get row :symbol))
+                                (ths-search--local session "港股"))))))
+
 ;;; ths-hkus-tests.el ends here
