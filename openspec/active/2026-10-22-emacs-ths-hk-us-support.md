@@ -6,7 +6,7 @@
 - 已确认：方案 ✅（用户 2026-10-22 确认原方案含 4 项取舍 + 迁移与 11 项修订），计划 ✅（用户 2026-10-22 确认；plan-reviewer 两轮独立审查：第一轮 blocking 经实测证伪并转为加固、第二轮 blocking 已修复）
 - 工件归属：本计划 2026-10-22 从 `~/thomas-emacs/openspec/active/` 迁入本仓库；thomas-emacs 侧只保留指针文件
 - 安全点：分支 `feat/hk-us-support` + tag `pre-hkus-baseline`
-- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ✅（分时与日 K：槽位画像化、端点按市场分派、港美取值路径与新浪日 K 兜底，141 tests 绿）；任务4 ✅（搜索港美映射与自选兼容，146 tests 绿）；任务5 ~ 任务8 待执行
+- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ✅（分时与日 K：槽位画像化、端点按市场分派、港美取值路径与新浪日 K 兜底，141 tests 绿）；任务4 ✅（搜索港美映射与自选兼容，146 tests 绿）；locale 补强 ✅（Makefile 固定 `LC_ALL=C.UTF-8`，`make check` 结果与调用者 locale 无关，146 tests / 0 unexpected 绿）；任务5 ~ 任务8 待执行
 - 下一步：任务5（排行榜：universe 扩 5 类、新浪港美榜单端点、东财港美节点跳过）
 
 ## 前置事实（实测 2026-10-22）
@@ -178,6 +178,7 @@
     - Makefile 注释写明：为什么必须用 `scripts/compile-strict.el`（`byte-compile-error-on-warn` 不抛错 + batch 退出码恒 0 两个陷阱）。
   - 验收标准：`make -n check` / `make -n run` / `make -n live-check` 三条均无报错；`make check` 在**未改动任何源码**的基线上返回 0，输出含 `Ran 124 tests` 与 `0 unexpected`；运行后 `git status --short` 不出现任何 `.elc`；人为制造一条 warning（用 `/tmp` 临时副本，不得污染仓库）时 `make check` 必须返回非零。`scripts/test-batch.el` 必须先加载 `tests/ths-tests.el`（自检方式：`grep -c "ths-tests.el" scripts/test-batch.el` 应 ≥ 1）。
   - 依赖：无
+  - 实现记录（2026-10-22，locale 固定补强）：`make check` 原有 3 条断言（`ths-fixture-charts-and-book-have-consistent-bounds`、`ths-volume-dashboard-shows-both-panels-without-growing-page`、`ths-volume-terminal-charts-preserve-height-and-column-width`）依赖 Emacs 宽字符显示宽度，结果随调用者 locale 变化——基线 `172e20d` 上实测即已存在，与港美改动无关：`LC_ALL=zh_CN.UTF-8` 下 3 条 FAILED（exit 2），`LC_ALL=C.UTF-8` / `en_US.UTF-8` 下 146 tests / 0 unexpected（exit 0）。为满足「`make check` 可重复、exit 0」的门禁判据，**不改任何测试断言与源码**，只在 Makefile 内固定运行环境：新增 `LOCALE_ENV = LC_ALL=C.UTF-8`，前缀到 `BATCH`（覆盖 `check` 与 `live-check` 两条命令行）和 `run` 目标的命令行；选定 `C.UTF-8` 依据是实测全绿且比 `en_US.UTF-8` 更通用（另实测 `LC_ALL=C` 非 UTF-8 会失败，故必须带 `.UTF-8`），文件头注释写明「有意覆盖调用者的 `LC_ALL`/`LANG`」。验证：默认环境 / `LC_ALL=zh_CN.UTF-8` / `LC_ALL=en_US.UTF-8` 三种调用均 `Ran 146 tests, 145 results as expected, 0 unexpected, 1 skipped` 且 exit 0；`make -n check` 输出含 `LC_ALL=C.UTF-8` 前缀；`.elc` 数 0。
 
 - [x] 任务1：市场画像表与符号规范化
   - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths-watchlist.el`（修改）、`/home/thomas/Workspace/emacs-ths/tests/ths-hkus-tests.el`（**创建**，先落符号矩阵骨架用例；任务7 扩充同一文件，禁止并行编辑）、`/home/thomas/Workspace/emacs-ths/scripts/test-batch.el`（修改：新测试文件加入显式加载清单，否则 `make check` 不会运行新用例——任务0 的清单遗漏，任务1 补齐）
