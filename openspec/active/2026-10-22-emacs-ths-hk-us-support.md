@@ -6,8 +6,8 @@
 - 已确认：方案 ✅（用户 2026-10-22 确认原方案含 4 项取舍 + 迁移与 11 项修订），计划 ✅（用户 2026-10-22 确认；plan-reviewer 两轮独立审查：第一轮 blocking 经实测证伪并转为加固、第二轮 blocking 已修复）
 - 工件归属：本计划 2026-10-22 从 `~/thomas-emacs/openspec/active/` 迁入本仓库；thomas-emacs 侧只保留指针文件
 - 安全点：分支 `feat/hk-us-support` + tag `pre-hkus-baseline`
-- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ~ 任务8 待执行
-- 下一步：任务3（分时与日 K：`ths-data-minute-slot` 画像化、端点按市场分派、日 K 后缀回填）
+- 进度：任务0 ✅（Makefile + 严格编译驱动 + ERT runner，基线 124 tests 绿）；任务1 ✅（画像表 + 符号规范化，129 tests 绿）；任务2 ✅（报价解析与 provider 路由，134 tests 绿）；任务3 ✅（分时与日 K：槽位画像化、端点按市场分派、港美取值路径与新浪日 K 兜底，141 tests 绿）；任务4 ~ 任务8 待执行
+- 下一步：任务4（自选与搜索：`ths-watchlist-symbol` 共用画像入口、搜索映射补港股/美股、`ths-data--search-parse` 按画像校验 code）
 
 ## 前置事实（实测 2026-10-22）
 
@@ -92,7 +92,7 @@
 | 分时端点 | tencent `appstock/app/minute/query` | 无 | tencent `appstock/app/minute/query` | tencent `appstock/app/usMinute/query` |
 | 日 K 端点 | tencent `appstock/app/fqkline/get` | 无（走 `ths-data--fund-fetch`） | tencent `fqkline/get`（`hk00700,day,,,120,qfq`） | tencent `usfqkline/get`（`usAAPL.OQ,day,,,120,qfq`） |
 | 榜单 universe | `stock` / `etf` / `lof` | 无 | `hkstock` | `usstock` |
-| 均价线 | 有（累计额 ÷ 累计量） | 无 | 有（行内含累计额） | 无（行内只有累计量） |
+| 均价线 | 有（价格均值线，图内按价格累加） | 无 | 有（价格均值线；行内累计额目前未使用） | 无（行内只有累计量） |
 | 报价时间格式（f30） | `20261022120530` | 无 | `2026/10/22 11:59:59` | `2026-10-21 16:00:01` |
 | 显示标签 | 沪A / 深A / 京A（ETF/LOF 沪基 / 深基） | 场外基金 | 港股 | 美股 |
 
@@ -115,11 +115,13 @@
 
 | 用途 | 端点 | 行格式 | 日期位置 | 备注 |
 |---|---|---|---|---|
-| 港股分时 | `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=hk00700` | `HHMM 价 累计量 累计额` | `data.date` | 4 列，第 4 列可用于均价线 |
-| 美股分时 | `https://web.ifzq.gtimg.cn/appstock/app/usMinute/query?code=usAAPL` | `HHMM 价 累计量` | `data.<code>.data.date` | 3 列，无额 → 不画均价线 |
-| 港股日 K | `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk00700,day,,,120,qfq` | 数组行 | 行首 | 带 `qfq` 时数组键名以实测为准 |
-| 美股日 K | `https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param=usAAPL.OQ,day,,,120,qfq` | 数组行 | 行首 | 后缀由报价 f2 回填 |
-| 美股日 K 兜底 | `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var _AAPL_MinK=/US_MinKService.getDailyK?symbol=AAPL&___qn=3` | JSONP 包裹的日 K 数组 | 行首 | 全历史约 941KB，必须节流 |
+| 港股分时 | `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=hk00700` | `HHMM 价 累计量 累计额` | `data.<code>.data.date`（实测 `data.hk00700.data.date`） | 4 列；与 A 股同级同形，`data.date` 的原记录已实测推翻 |
+| 美股分时 | `https://web.ifzq.gtimg.cn/appstock/app/usMinute/query?code=usAAPL` | `HHMM 价 累计量` | `data.<code>.data.date`（实测 `data.usAAPL.data.date`） | 3 列，无累计额 → 不画均价线；日 K 层级与港股一致（原记录的两层不对称不成立） |
+| 港股日 K | `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=hk00700,day,,,120,qfq` | 数组行 `[日期 开 收 高 低 量]` | 行首 | 实测数组键名 **`day`**（qfq 下仍返回 `day`，121 行含当日） |
+| 美股日 K | `https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param=usAAPL.OQ,day,,,120,qfq` | 数组行 `[日期 开 收 高 低 量]` | 行首 | 实测数组键名 **`qfqday`**（120 行）；`data` 键带后缀 `usAAPL.OQ`，取值需容忍后缀。后缀由报价 f2 回填 |
+| 美股日 K 兜底 | `https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var _AAPL_MinK=/US_MinKService.getDailyK?symbol=AAPL&___qn=3` | JSONP：块注释 + `var _AAPL_MinK=([{d,o,h,l,c,v,a},…]);` | 行首 `d`（已是 `%F`） | 实测 10058 行 / 941526 字节，只保留最近 120 根，必须节流 |
+
+> 实测记录（2026-10-22）：港股分时 312 点（盘中，首点 slot 0）、美股分时 391 点（首 0 末 390）、港股日 K 121 行、美股日 K 120 行、新浪兜底 10058 行截到 120 行；港美分时层级与 A 股完全一致，实现上共用一条 tencent 取值路径，仅列数与端点不同。
 
 ### ④ 榜单端点
 
@@ -214,7 +216,7 @@
   - 验收标准：新增 ERT `ths-hkus-quote-tencent-parses`、`ths-hkus-quote-sina-parses`、`ths-hkus-quote-amount-scale`（断言 A 股 ×10000、港美 ×1）、`ths-hkus-quote-single-level-book`；`tests/ths-data-tests.el` 既有 A 股解析断言全绿。
   - 依赖：任务1
 
-- [ ] 任务3：分时与日 K
+- [x] 任务3：分时与日 K
   - 文件：`/home/thomas/Workspace/emacs-ths/ths-data.el`（修改）、`/home/thomas/Workspace/emacs-ths/ths-chart.el`（修改）
   - 步骤：
     - 改 `ths-data-minute-slot`（`ths-data.el:248`，`(cond ((<= 570 m 690) ...) ((<= 780 m 900) ...))`）为按画像 `:segments` 累加计算 slot，超界仍报错（A 股 240、港股 330、美股 390，均取 elapsed 分钟数）；签名改为 `(time &optional market)`（缺省按 A 股，保证 `tests/ths-data-tests.el:128` 既有断言仍绿）。
@@ -228,6 +230,13 @@
   - 验收标准：新增 ERT `ths-hkus-minute-slot-hk`、`ths-hkus-minute-slot-us`、`ths-hkus-svg-omits-average-line-us`、`ths-hkus-daily-throttle-us`；`tests/ths-data-tests.el:128`（`(= 240 (ths-data-minute-slot "1500"))`）仍绿。
     - 槽映射断言值（写死为常量，不取实现计算值）：港股 09:30→0、12:00→150、13:00→150、16:00→330。
     - 槽映射断言值（续）：美股 09:30→0、16:00→390；A 股 09:30→0、11:30→120、13:00→120、15:00→240（回归）。
+  - 实现记录（2026-10-22 实测，与上述步骤的偏差已按实测落定）：
+    - 港美分时层级与 A 股**完全一致**（`data.<code>.data.date` + `data.<code>.data.data`），因此共用同一条 tencent 取值路径，只有端点（`minute` / `usMinute`）与列数（4 / 3）不同——原计划设想的「四种组合取值」不成立。
+    - 数据层**不产出** `:average` 字段：均价线是 `ths-chart.el` 按价格累加算出的图内均值（`mean-line` / 字符图「·」）。因此「美股无均价线」由画像 `:average-line` 驱动，未新增无人使用的 `:average` 键（避免造死数据）。
+    - 交易所后缀读取必须用 `(ths-data-find (ths-data-symbol-id symbol))`：`ths-data-find` 以 `:code` 匹配，直接传 `usAAPL` 恒为 nil（会永远走新浪）。
+    - 日 K 数组键名按实测分派：美股 `qfqday`、港股 `day`、A 股 `day`（`ths-data--tencent-candles`），并新增 `ths-data--node` 容忍美股 `data` 键的 `.OQ` 后缀。
+    - 坐标按 `:minutes` 缩放并把比例夹到 `[0,1]`：实际点数少于画像分钟数（盘中）或与之不等时不报错、不越界。
+    - 轴标签按画像 `:axis-label` 派生出「会话起/中点/止」（相邻两段共享边界写作 `A / B`）：A 股输出与改动前**逐字一致**（已实测比对 SVG 轴行），港 `09:30 10:45 12:00 / 13:00 14:30 16:00`、美 `09:30 12:45 16:00`。
   - 依赖：任务2
 
 - [ ] 任务4：自选与搜索
@@ -323,7 +332,7 @@
 5. **港美股成交明细必须同时剪掉数据层请求**：只在详情页 UI 层隐藏面板不够——`ths--ensure-chart`（`ths.el:138` 定义，`:145` 三元分支）若仍把 `'trades` 放进请求列表（现为 `(if (ths-data-otc-p stock) '(quote) (list (plist-get state :chart) 'trades))`），港美股每 30s 会打一次必然失败的东财请求。改造必须在请求列表与渲染分支两层同时剪掉，并用 ERT 双向断言（hk/us 无 `trades`、A 股仍有）。另：A 股成交明细在本机因东财不可达已失效，属既有技术债（见任务8 的 tech-debt 条目），本计划不修复。
 6. **A 股回归风险集中在固定长度 / 固定字段假设**：`ths-data-symbol-id`（`:58`）的 `(substring symbol 2)`、`ths-data-fund-p`（`:73`）的 `(= (length symbol) 8)`、`ths-data--quote-sina`（`:221`）的 `>= 32` 字段、`ths-data-minute-slot`（`:248`）的两段区间——任何一处改错都让 A 股静默降级。必须靠现有 2399 行测试兜底，且改动优先「加参数保留默认行为」而非重写。
 7. **3 处既有断言与新增能力冲突**：`tests/ths-search-tests.el:56`（期望港股被丢弃）、`tests/ths-ranking-tests.el:284`（`("00700" 116)` 期望 nil）、`tests/ths-search-tests.el:54`（`("00700" . "港股")` 在拒绝集）——必须同步改写为「接受」而不是删除用例，否则等于取消护栏。
-8. **qfq 日 K 的数组键名可能变化**：A 股路径读的是 `data.<symbol>.day`，但带 `qfq` 参数的港美端点（`fqkline` / `usfqkline`）键名可能是 `qfqday`。实现时须先打印一次响应结构再定键，不能沿用 A 股的 `"day"` 硬编码。
+8. **qfq 日 K 的数组键名可能变化**：A 股路径读的是 `data.<symbol>.day`，但带 `qfq` 参数的港美端点（`fqkline` / `usfqkline`）键名可能是 `qfqday`。实现时须先打印一次响应结构再定键，不能沿用 A 股的 `"day"` 硬编码。**已实测确认（2026-10-22）**：美股 `usfqkline` 返回 `data["usAAPL.OQ"].qfqday`（120 行），港股 `fqkline` 在同样 `qfq` 参数下仍返回 `data["hk00700"].day`（121 行）；实现按「港美先读 `qfqday`、缺失再读 `day`，A 股只读 `day`」分派（`ths-data--tencent-candles`），并新增 `ths-data--node` 容忍美股 `data` 键的交易所后缀。
 9. **美股指数符号与 `us` + 字母规范冲突**：`us.IXIC` / `us.INX` 含点号，符号正则必须允许点号（任务1 已含），且 `ths-data-symbol-id` 不能把点号当分隔符截断；`usDJI` 则无点号——两种形态都要在符号矩阵用例里覆盖。
 10. **`u` 键循环从 3 态变 5 态属行为变更**：`tests/ths-fund-ranking-tests.el:217` 附近的键盘断言依赖「stock → etf → lof」顺序，需同步更新期望序列，并在 README 按键表写明新顺序。同源风险还包括 `tests/ths-fund-ranking-tests.el:187-210` 的按钮行布局断言（5 按钮 → 7 按钮/窄窗隐藏），两处必须在任务7 一并修正。
 11. **测试文件不参与字节编译**：`make check` 只严格编译 7 个源文件；`tests/ths-trades-tests.el:101` 存在既存 free variable `buffer`（严格编译会失败），属既存噪声，不在本计划范围。若将来把测试纳入字节编译，需先给使用公共宏/辅助函数的测试文件补 `(require 'ths-tests nil t)` 并修该文件，否则 `-l` 与陈旧 `.elc` 混用会静默取到未展开宏的字节码。

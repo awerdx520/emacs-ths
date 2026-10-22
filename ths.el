@@ -135,6 +135,15 @@
         ;; A transport can fail synchronously (e.g. curl is missing).
         (when (gethash key ths--requests) (puthash key cancel ths--requests))))))
 
+(defun ths--slow-kind-p (stock kind)
+  "Return non-nil when STOCK's KIND refreshes on the fifteen minute cadence.
+Off-exchange funds publish one net value per day and US daily candles come
+from a full-history fallback, so both would otherwise be re-requested on
+every quote refresh."
+  (or (ths-data-otc-p stock)
+      (and (eq kind 'daily)
+           (equal (ths-data-market-key (plist-get stock :symbol)) "us"))))
+
 (defun ths--ensure-chart (&optional force)
   "Fetch the selected chart and trades if expired, or when FORCE is non-nil."
   (when (and ths-auto-fetch ths--session
@@ -145,7 +154,9 @@
         (dolist (kind (if (ths-data-otc-p stock) '(quote)
                         (list (plist-get state :chart) 'trades)))
           (let ((stamp (plist-get stock (intern (format ":%s-fetched-at" kind)))))
-            (when (or force (not stamp) (> (- (float-time) stamp) (if (ths-data-otc-p stock) 900 (or ths-refresh-interval 30))))
+            (when (or force (not stamp)
+                      (> (- (float-time) stamp)
+                         (if (ths--slow-kind-p stock kind) 900 (or ths-refresh-interval 30))))
               (ths--fetch (plist-get stock :symbol) kind))))))))
 
 (defun ths-refresh (&optional automatic)
@@ -898,7 +909,11 @@ NAME is optional display metadata selected from stock search suggestions."
           (etaf-node 'row '(:item-gap (ch 1))
                      (list (ths--button 'intraday "分时" (lambda () (ths--set ref :chart 'intraday)) intraday)
                            (ths--button 'daily "日 K" (lambda () (ths--set ref :chart 'daily)) (not intraday))))
-          (ths--text (if intraday "分时走势  · 蓝色价格 / 黄色均线" "日 K  · 红涨绿跌 / 不复权") (ths-theme-color 'secondary))
+          (ths--text (if intraday (if (ths-chart--average-line-p stock)
+                                      "分时走势  · 蓝色价格 / 黄色均线"
+                                    "分时走势  · 蓝色价格")
+                       "日 K  · 红涨绿跌 / 不复权")
+                     (ths-theme-color 'secondary))
           (etaf-node 'column (list :ref 'chart-region :height (list 'lh chart-rows))
                      (list (cond
                             ((not available) (ths--text (if chart-error "暂无图表数据 · 获取失败，按 r 重试" "暂无图表数据 · 等待获取") (ths-theme-color 'warning)))
@@ -911,7 +926,7 @@ NAME is optional display metadata selected from stock search suggestions."
                             (t (etaf-node 'column nil
                                           (list (ths--text (if intraday (ths-chart-line stock (- chart-width 10) (1- chart-rows))
                                                              (ths-chart-candles stock (/ (- chart-width 10) 2) (1- chart-rows))))
-                                                (ths--text (if intraday "         09:30               11:30 / 13:00          15:00"
+                                                (ths--text (if intraday (format "         %s" (or (plist-get (ths-data-market stock) :axis-label) ""))
                                                              (let ((candles (ths-data-candles stock (/ (- chart-width 10) 2))))
                                                                (format "         %s — %s" (plist-get (car candles) :date)
                                                                        (plist-get (car (last candles)) :date)))) (ths-theme-color 'muted))))))))

@@ -182,4 +182,213 @@
       (ths-data-fetch "sh600519" 'trades #'ignore))
     (should (= 1 calls))))
 
+;;; 分时与日 K（任务3）：真实行格式样本，探测日期 2026-10-22。
+
+(defconst ths-hkus-test-tencent-hk-minute
+  (concat "{\"code\":0,\"msg\":\"\",\"data\":{\"hk00700\":{\"data\":{"
+          "\"data\":[\"0930 387.000 1655673 640962060.800\","
+          "\"1200 390.000 5000000 1950000000.000\","
+          "\"1300 389.500 5000001 1950000020.000\","
+          "\"1600 380.800 54405891 20022534991.300\"],"
+          "\"date\":\"20261022\"},"
+          "\"qt\":{\"hk00700\":[\"100\",\"腾讯控股\",\"00700\",\"380.800\",\"393.800\"]},"
+          "\"vcm\":\"\"}}}")
+  "腾讯港股分时真实形态（探测 2026-10-22）：日期在 data.<code>.data.date，
+行 4 列为 HHMM 价 累计量 累计额，行数截断到 4。")
+
+(defconst ths-hkus-test-tencent-us-minute
+  (concat "{\"code\":0,\"msg\":\"\",\"data\":{\"usAAPL\":{\"data\":{"
+          "\"data\":[\"0930 339.43 349412\",\"1200 341.10 2000000\","
+          "\"1600 343.99 35614126\"],\"date\":\"20261021\"},"
+          "\"qt\":{\"usAAPL\":[\"200\",\"苹果\",\"AAPL.OQ\",\"343.99\",\"339.50\"]}}}}")
+  "腾讯美股分时真实形态（探测 2026-10-22）：层级同港股，行只有 3 列
+（HHMM 价 累计量），行数截断到 3。")
+
+(defconst ths-hkus-test-tencent-hk-daily
+  (concat "{\"code\":0,\"msg\":\"\",\"data\":{\"hk00700\":{\"day\":["
+          "[\"2026-10-20\",\"413.200\",\"410.400\",\"415.600\",\"406.400\",\"22840013.000\"],"
+          "[\"2026-10-21\",\"412.000\",\"393.800\",\"413.400\",\"393.800\",\"37783835.000\"]],"
+          "\"qt\":{\"hk00700\":[\"100\",\"腾讯控股\",\"00700\",\"380.800\",\"393.800\"]},"
+          "\"prec\":\"473.800\"}}}")
+  "腾讯港股日 K 真实形态（探测 2026-10-22，fqkline + qfq）：数组键名为 day，
+行为 QFQ 调整后的数组 [日期 开 收 高 低 成交量]。")
+
+(defconst ths-hkus-test-tencent-us-daily
+  (concat "{\"code\":0,\"msg\":\"\",\"data\":{\"usAAPL.OQ\":{\"qfqday\":["
+          "[\"2026-10-20\",\"339.86\",\"339.50\",\"343.06\",\"338.70\",\"35851382.00\"],"
+          "[\"2026-10-21\",\"339.36\",\"343.99\",\"345.25\",\"338.83\",\"35614126.00\"]],"
+          "\"qt\":{\"usAAPL.OQ\":[\"200\",\"苹果\",\"AAPL.OQ\",\"343.99\",\"339.50\"]},"
+          "\"version\":\"12\"}}}")
+  "腾讯美股日 K 真实形态（探测 2026-10-22，usfqkline + qfq）：数组键名为
+qfqday，data 键带交易所后缀 usAAPL.OQ，行同样为数组。")
+
+(defconst ths-hkus-test-sina-us-daily
+  (concat "/*<script>location.href='//sina.com';</script>*/\n"
+          "var _AAPL_MinK=([{\"d\":\"2026-10-20\",\"o\":\"339.86\",\"h\":\"343.06\","
+          "\"l\":\"338.70\",\"c\":\"339.50\",\"v\":\"35851382\",\"a\":\"12194900000\"},"
+          "{\"d\":\"2026-10-21\",\"o\":\"339.36\",\"h\":\"345.25\",\"l\":\"338.83\","
+          "\"c\":\"343.99\",\"v\":\"35614107\",\"a\":\"12223100000\"}]);")
+  "新浪美股日 K JSONP 真实形态（探测 2026-10-22）：`var _<CODE>_MinK=([...]);'
+前有块注释，每条为 d/o/h/l/c/v/a 对象，全历史约 941KB。")
+
+(defun ths-hkus-test-chart-stock (symbol slots base)
+  "Return a STOCK plist for SYMBOL with SLOTS and BASE for chart tests."
+  (plist-put (list :symbol symbol :price base :intraday-close base
+                   :points (cl-loop for (time slot price) in slots
+                                    collect (list :time time :slot slot :price price
+                                                  :volume 1000)))
+             :symbol symbol))
+
+(ert-deftest ths-hkus-minute-slot-hk ()
+  "港股槽位按画像两段时段累加：09:30→0、12:00→150、13:00→150、16:00→330。"
+  (let ((hk (ths-data-market "hk00700")))
+    (should (= 0 (ths-data-minute-slot "09:30" hk)))
+    (should (= 150 (ths-data-minute-slot "1200" hk)))
+    (should (= 150 (ths-data-minute-slot "13:00" hk)))
+    (should (= 330 (ths-data-minute-slot "1600" hk)))
+    ;; 符号字符串与画像 plist 等价。
+    (should (= 330 (ths-data-minute-slot "1600" "hk00700")))
+    ;; 午休空档与收盘后仍报错，不做截断。
+    (should-error (ths-data-minute-slot "1215" hk))
+    (should-error (ths-data-minute-slot "1601" hk))))
+
+(ert-deftest ths-hkus-minute-slot-us ()
+  "美股午间不休息：09:30→0、16:00→390；缺省市场仍是 A 股 240 分钟。"
+  (let ((us (ths-data-market "usAAPL")))
+    (should (= 0 (ths-data-minute-slot "09:30" us)))
+    (should (= 150 (ths-data-minute-slot "12:00" us)))
+    (should (= 390 (ths-data-minute-slot "16:00" us)))
+    (should-error (ths-data-minute-slot "16:30" us))
+    (should (= 0 (ths-data-minute-slot "09:30")))
+    (should (= 120 (ths-data-minute-slot "11:30")))
+    (should (= 120 (ths-data-minute-slot "13:00")))
+    (should (= 240 (ths-data-minute-slot "15:00")))
+    (should (= 240 (ths-data-minute-slot "1500" (ths-data-market "sh600519"))))
+    (should-error (ths-data-minute-slot "1200"))))
+
+(ert-deftest ths-hkus-intraday-hk-us-parses ()
+  "港美分时解析：层级实测为 data.<code>.data.date，港 4 列、美 3 列。"
+  (let* ((hk (ths-data--chart ths-hkus-test-tencent-hk-minute "hk00700" 'tencent 'intraday))
+         (us (ths-data--chart ths-hkus-test-tencent-us-minute "usAAPL" 'tencent 'intraday))
+         (hk-stock (plist-put (copy-sequence hk) :symbol "hk00700"))
+         (us-stock (plist-put (copy-sequence us) :symbol "usAAPL")))
+    (should (= 4 (length (plist-get hk :points))))
+    (should (= 0 (plist-get (car (plist-get hk :points)) :slot)))
+    (should (= 330 (plist-get (car (last (plist-get hk :points))) :slot)))
+    (should (equal "2026-10-22" (plist-get hk :intraday-date)))
+    (should (= 393.8 (plist-get hk :intraday-close)))
+    (should (= 3 (length (plist-get us :points))))
+    (should (= 0 (plist-get (car (plist-get us :points)) :slot)))
+    (should (= 390 (plist-get (car (last (plist-get us :points))) :slot)))
+    (should (equal "2026-10-21" (plist-get us :intraday-date)))
+    ;; 港行含累计额 → 均价线可用；美行只有累计量 → 均价线必须缺席。
+    (should (ths-chart--average-line-p hk-stock))
+    (should-not (ths-chart--average-line-p us-stock))))
+
+(ert-deftest ths-hkus-daily-candles-hk-us ()
+  "港美日 K：港股键 day、美股键 qfqday，行格式为数组；新浪 JSONP 兜底可解析。"
+  (let ((hk (ths-data--chart ths-hkus-test-tencent-hk-daily "hk00700" 'tencent 'daily))
+        (us (ths-data--chart ths-hkus-test-tencent-us-daily "usAAPL" 'tencent 'daily))
+        (sina (ths-data--chart ths-hkus-test-sina-us-daily "usAAPL" 'sina 'daily)))
+    (should (= 2 (length (plist-get hk :candles))))
+    (should (equal "2026-10-21" (plist-get (car (last (plist-get hk :candles))) :date)))
+    (should (= 393.8 (plist-get (car (last (plist-get hk :candles))) :close)))
+    (should (= 2 (length (plist-get us :candles))))
+    (should (equal "2026-10-21" (plist-get (car (last (plist-get us :candles))) :date)))
+    (should (= 343.99 (plist-get (car (last (plist-get us :candles))) :close)))
+    (should (= 2 (length (plist-get sina :candles))))
+    (should (= 343.99 (plist-get (car (last (plist-get sina :candles))) :close)))
+    (should (= 35614107 (plist-get (car (last (plist-get sina :candles))) :volume)))
+    ;; 键名优先级：qfqday 优先，缺了再退回 day；A 股仍只读 day。
+    (should (equal '(("a")) (ths-data--tencent-candles
+                             '((qfqday ("a")) (day ("b"))) "usAAPL")))
+    (should (equal '(("b")) (ths-data--tencent-candles
+                             '((qfqday ("a")) (day ("b"))) "sh600519")))
+    ;; 真实行格式生成 120 根美股日 K：数量下限与日期形态。
+    (let* ((rows (cl-loop for i below 120
+                          collect (format "[\"2026-%02d-%02d\",\"1.00\",\"1.10\",\"1.20\",\"0.90\",\"100.00\"]"
+                                          (1+ (/ i 28)) (1+ (% i 28)))))
+           (text (concat "{\"code\":0,\"data\":{\"usAAPL.OQ\":{\"qfqday\":["
+                         (mapconcat #'identity rows ",") "]}}}"))
+           (candles (plist-get (ths-data--chart text "usAAPL" 'tencent 'daily) :candles)))
+      (should (= 120 (length candles)))
+      (should (string-match-p "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\'"
+                              (plist-get (car (last candles)) :date))))
+    ;; 新浪兜底只保留最近 120 根（全历史约一万根）。
+    (let* ((rows (cl-loop for i below 130
+                          collect (format "{\"d\":\"2026-%02d-%02d\",\"o\":\"1.00\",\"h\":\"1.20\",\"l\":\"0.90\",\"c\":\"1.10\",\"v\":\"100\",\"a\":\"0\"}"
+                                          (1+ (/ i 28)) (1+ (% i 28)))))
+           (text (concat "var _AAPL_MinK=([" (mapconcat #'identity rows ",") "]);"))
+           (candles (plist-get (ths-data--chart text "usAAPL" 'sina 'daily) :candles)))
+      (should (= 120 (length candles))))))
+
+(ert-deftest ths-hkus-svg-omits-average-line-us ()
+  "美股无均价线：SVG 不出现 mean-line、字符图无均价点；港美股坐标按画像缩放。"
+  (let* ((hk (ths-hkus-test-chart-stock
+              "hk00700" '(("09:30" 0 387.0) ("12:00" 150 390.0) ("16:00" 330 380.8)) 393.8))
+         (us (ths-hkus-test-chart-stock
+              "usAAPL" '(("09:30" 0 339.43) ("12:00" 150 341.1) ("16:00" 390 343.99)) 339.5))
+         (hk-svg (ths-chart-svg hk)) (us-svg (ths-chart-svg us))
+         (hk-line (ths-chart-line hk)) (us-line (ths-chart-line us)))
+    (should (string-match-p "id=\"mean-line\"" hk-svg))
+    (should-not (string-match-p "mean-line" us-svg))
+    ;; 收盘点位贴右边界：330/330 与 390/390 都是 x=644。
+    (should (string-match-p "cx=\"644.00\"" hk-svg))
+    (should (string-match-p "cx=\"644.00\"" us-svg))
+    ;; 轴文案来自画像 :axis-label：港有午休边界，美没有。
+    (should (string-match-p "12:00 / 13:00" hk-svg))
+    (should-not (string-match-p "11:30 / 13:00" us-svg))
+    (should (string-match-p "12:45" us-svg))
+    (should (string-match-p ">09:30<" us-svg))
+    ;; 字符图：均价点「·」只在港股出现（A 股回归见 ths-chart 既有用例）。
+    (should (< (cl-count ?· us-line) (cl-count ?· hk-line)))))
+
+(ert-deftest ths-hkus-url-dispatch ()
+  "分时/日 K 端点按市场分派；美股日 K 依赖交易所后缀，缺后缀改走新浪。"
+  (should (string-match-p "minute/query\\?code=hk00700"
+                          (ths-data--url 'tencent 'intraday "hk00700")))
+  (should (string-match-p "usMinute/query\\?code=usAAPL"
+                          (ths-data--url 'tencent 'intraday "usAAPL")))
+  (should (string-match-p "minute/query\\?code=sh600519"
+                          (ths-data--url 'tencent 'intraday "sh600519")))
+  (should (string-match-p "fqkline/get\\?param=hk00700,day,,,120,qfq"
+                          (ths-data--url 'tencent 'daily "hk00700")))
+  (should (string-match-p "fqkline/get\\?param=sh600519,day,,,120,$"
+                          (ths-data--url 'tencent 'daily "sh600519")))
+  (let ((ths-data-stocks (list (list :symbol "usAAPL" :code "AAPL" :exchange-suffix "OQ"))))
+    (should (string-match-p "usfqkline/get\\?param=usAAPL\\.OQ,day,,,120,qfq"
+                            (ths-data--url 'tencent 'daily "usAAPL")))
+    (should (equal '(tencent sina) (ths-data--providers "usAAPL" 'daily))))
+  (let ((ths-data-stocks nil))
+    ;; 无后缀禁止拼无后缀 URL，provider 链直接换成新浪兜底。
+    (should-error (ths-data--url 'tencent 'daily "usAAPL"))
+    (should (equal '(sina) (ths-data--providers "usAAPL" 'daily)))
+    (should (string-match-p "US_MinKService.getDailyK\\?symbol=AAPL"
+                            (ths-data--url 'sina 'daily "usAAPL"))))
+  (should (equal '(tencent) (ths-data--providers "usAAPL" 'intraday)))
+  (should (equal '(tencent) (ths-data--providers "hk00700" 'daily))))
+
+(ert-deftest ths-hkus-daily-throttle-us ()
+  "美股日 K 与场外基金同档 900 秒节流；A 股日 K 仍按刷新间隔重取。"
+  (should (ths--slow-kind-p (list :symbol "usAAPL") 'daily))
+  (should-not (ths--slow-kind-p (list :symbol "usAAPL") 'intraday))
+  (should (ths--slow-kind-p (list :symbol "of005827") 'quote))
+  (should-not (ths--slow-kind-p (list :symbol "sh600519") 'daily))
+  (dolist (case '(("usAAPL" . 0) ("sh600519" . 1)))
+    (let* ((symbol (car case)) (expected (cdr case)) (code (substring symbol 2))
+           (calls nil)
+           (stock (list :symbol symbol :code code
+                        :daily-fetched-at (- (float-time) 100)))
+           (ths-auto-fetch t) (ths--session 'test))
+      (cl-letf (((symbol-function 'etaf-value)
+                 (lambda (_state) (list :page 'detail :selected code :chart 'daily)))
+                ((symbol-function 'ths-data-find) (lambda (_code) stock))
+                ((symbol-function 'ths--fetch)
+                 (lambda (sym kind) (push (cons sym kind) calls))))
+        (ths--ensure-chart))
+      (should (= expected (length (seq-filter (lambda (call) (eq (cdr call) 'daily)) calls))))
+      (if (= 1 expected)
+          (should (member (cons symbol 'daily) calls))
+        (should-not (member (cons symbol 'daily) calls))))))
+
 ;;; ths-hkus-tests.el ends here
