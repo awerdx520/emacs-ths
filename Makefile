@@ -13,7 +13,9 @@
 # 其返回值不影响 emacs 的退出码；`byte-compile-error-on-warn` 为 t 时遇 warning
 # 只让 `byte-compile-file` 返回 nil 且不生成 `.elc`，emacs 仍以 0 退出 —— 即
 # `make compile` 会假绿。门禁只能由脚本按返回值判失败并显式 `kill-emacs 1`。
-# 脚本的源文件清单由命令行参数给出（`--` 之后），缺省回落到 8 个源文件；
+# 脚本的源文件清单由命令行参数给出（`--` 之后），缺省清单仍是 8 个源文件
+# （`ths-info.el` 由计划 B3 加入 SOURCES 后实到 9 个，compile-strict.el 的
+# 缺省清单未同步；`compile` 目标始终显式传 $(SOURCES)，故缺省值不参与门禁）；
 # 编译产物写入临时目录，仓库内永不出现 `.elc`。
 #
 # locale 固定（LOCALE_ENV）：离线套件里曾有 3 条断言
@@ -27,10 +29,10 @@ EMACS ?= emacs
 LOAD ?=
 STRAIGHT_BUILD ?=
 
-SOURCES = ths.el ths-ai.el ths-chart.el ths-data.el ths-diagnose.el ths-search.el ths-theme.el ths-watchlist.el
+SOURCES = ths.el ths-ai.el ths-chart.el ths-data.el ths-diagnose.el ths-info.el ths-search.el ths-theme.el ths-watchlist.el
 
 # 离线 ERT 文件，顺序固定：data → otc → ranking → fund-ranking → search →
-# trades → volume → watchlist → tests → layout → ai → hkus。
+# trades → volume → watchlist → tests → layout → ai → info → hkus。
 # 不含 tests/ths-gui-tests.el（需图形）与 tests/ths-live-check.el（需网络）。
 TESTS = tests/ths-data-tests.el \
         tests/ths-otc-tests.el \
@@ -43,6 +45,7 @@ TESTS = tests/ths-data-tests.el \
         tests/ths-tests.el \
         tests/ths-layout-tests.el \
         tests/ths-ai-tests.el \
+        tests/ths-info-tests.el \
         tests/ths-hkus-tests.el
 
 # 已知基线失败：当前为空。那 3 条曾被排除的用例已由 LOCALE_ENV=C.UTF-8 转绿。
@@ -70,7 +73,7 @@ BUILD_ENV = STRAIGHT_BUILD_DIR="$(STRAIGHT_BUILD)"
 check: compile test
 	@echo "check: ok"
 
-# 严格字节编译（警告即错误）：8 个源文件逐一编译，任一 warning/error 即非零退出
+# 严格字节编译（警告即错误）：9 个源文件逐一编译，任一 warning/error 即非零退出
 compile:
 	@$(LOCALE_ENV) $(BUILD_ENV) $(EMACS) -Q --batch $(LOAD) --eval '$(BOOTSTRAP)' \
 	  -l scripts/compile-strict.el -- $(SOURCES)
@@ -101,7 +104,7 @@ clean:
 help:
 	@echo "make check       严格字节编译 + 离线 ERT 全量（0 unexpected）"
 	@echo "make check-all   离线 ERT 全量（与 check 等价）"
-	@echo "make compile     仅严格字节编译（8 个源文件，警告即错误）"
+	@echo "make compile     仅严格字节编译（9 个源文件，警告即错误）"
 	@echo "make test        仅离线 ERT 全量（0 unexpected）"
 	@echo "make live-check  真实行情接口冒烟检查（需网络）"
 	@echo "make run         从当前源码启动干净的 Emacs 并打开 THS"
