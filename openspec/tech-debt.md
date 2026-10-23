@@ -13,11 +13,12 @@
 | 2026-10-23 | `elisp_check_parens`（elisp-dev-mcp 工具）对 `tests/*.el` | 工具用 `fundamental-mode` 解析文件，中文注释里成对的反引号（`` `…' `` 风格之外的成对 `` ` ``）被当作代码字符，导致假阳性括号不匹配；未修改的备份文件同样报错 | `tests/ths-ai-tests.el` 无法用该工具做 L1 门禁，易误判为回归（本仓库以 `make compile` 为准） | 以 `make compile` / 离线 ERT 为 `tests/*.el` 的门禁；工具侧待改为按 `emacs-lisp-mode` 语法表解析 |
 | 2026-10-23 | elisp-dev-mcp 的 task 文件（`/run/user/1000/elisp-mcp-task`） | task 声明是全局单例：多个子代理并行使用 elisp-dev-mcp 时，后声明者会覆盖前者的 `task`，验证请求可能落到主实例 | 并行编排下验证结论不可信，写操作有污染用户 Emacs 的风险 | 编排约束：同一时刻只允许一个子代理使用 elisp-dev-mcp；如需并行，工具侧应把 task 改为按会话/进程维度隔离 |
 | 2026-10-23 | `Makefile` 的 `compile` 目标（合并前 master 版） | 门禁漏判：`-f batch-byte-compile` 是命令，返回值不影响 emacs 退出码；`byte-compile-error-on-warn=t` 遇 warning 只让 `byte-compile-file` 返回 nil 且不生成 `.elc`，emacs 仍以 0 退出 → `make compile` 假绿 | 严格编译门禁形同虚设，warning 长期潜伏 | 已改用 `scripts/compile-strict.el`（按返回值判失败 + 显式 `kill-emacs 1`） |
+| 2026-10-23 | `tests/ths-live-check.el`（等待上限 `(* 6 ths-data-timeout) + 5` 秒） | 等待上限按「单请求超时 × 数据源链深度」人工估算；港美报价链为腾讯 → 新浪 → 东财三层，上限随之由 4× 调到 6× | 链路再加深（或新增一层兜底）时上限需人工同步：偏小会把正常回退误判为超时失败（假红），偏大则拖长真实失败时的反馈时间 | 改为按实际注册的检查项与其 provider 链长度计算上限，或给每项独立 deadline |
 
 ## 2026-10-22 — 东财 push2 域名族在本机不可达，A 股成交明细失效、A 股榜单依赖新浪回退
 
 - **现象**：`push2`、`push2his`、`82.push2`、`88.push2`、`push2delay` 在本机（WSL2 mirrored 网络）TLS 握手后 EOF；57 次尝试仅 2 次偶发 200。
-- **影响**：① A 股成交明细（唯一东财源）功能失效；② A 股排行榜依赖 `ths-data-ranking-providers` 的新浪回退才能出数据；③ 港美股东财报价 / 日 K 分支无法实网验证，只能靠离线 fixture 覆盖。
+- **影响面**：① A 股成交明细（唯一东财源）功能失效；② A 股排行榜依赖 `ths-data-ranking-providers` 的新浪回退才能出数据；③ 港美股东财报价 / 日 K 分支无法实网验证，只能靠离线 fixture 覆盖（港美排行榜本身无东财节点，全部走新浪，不受影响）。
 - **复现**：`curl -sv --noproxy '*' --max-time 5 'https://push2.eastmoney.com/api/qt/stock/get?secid=1.600519&fields=f43'`（预期 TLS 握手后 EOF）。
 - **发现日期**：2026-10-22（两轮港美股接口探测期间）。
 - **处置**：港美支持计划不复现该父问题（A 股成交明细行为保持原状）；恢复可达性后补测港美东财分支，并把 `make live-check` 里的 `skip` 改回真实检查。
