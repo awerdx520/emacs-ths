@@ -32,6 +32,7 @@
 (require 'subr-x)
 (require 'json)
 (require 'ths-data)
+(require 'ths-info)
 (require 'ths-theme)
 
 ;; The report buffer disables the confirmation prompt of the two link types that
@@ -368,6 +369,38 @@ the macro factor is off."
           (setq facts (plist-put facts :turnover turnover)))))
     facts))
 
+(defun ths-ai--info-digest (info)
+  "Return a comparable digest of the information factors of INFO.
+INFO is the plist `ths-info-collect' hands to its callback, or nil.  The digest
+is what the analysis cache compares: two collections that only re-fetched the
+same headlines, the same two announcement art-codes, the same newest report
+period and the same industry reading produce an `equal' digest, so the cached
+analysis stays valid and no token is spent.  A factor that is missing (or came
+back empty) contributes nil, which keeps the digest a fixed four-key plist — a
+nil INFO and an INFO whose every source failed then compare equal, as they
+should: neither carries information worth invalidating an analysis for.
+
+The parts are the ones that change when the *content* changes rather than its
+rendering: the headline count with the newest headline time, the art-codes of
+the two newest announcements (an art-code identifies a published document, so a
+new announcement cannot keep the old one), the newest report period and its
+revenue, and the industry name with its change."
+  (list :news (let ((items (plist-get info :news)))
+                (when (consp items)
+                  (list (length items) (plist-get (car items) :time))))
+        :announcements (let ((items (plist-get info :announcements)))
+                         (when (consp items)
+                           (mapcar (lambda (item) (plist-get item :art-code))
+                                   (seq-take items 2))))
+        :financials (let ((rows (plist-get info :financials)))
+                      (when (consp rows)
+                        (list (plist-get (car rows) :period)
+                              (plist-get (car rows) :revenue))))
+        :industry (let ((industry (plist-get info :industry)))
+                    (when industry
+                      (list (plist-get industry :name)
+                            (plist-get industry :change))))))
+
 (defun ths-ai--stock-facts (stock &optional info)
   "Return a flat plist of local market facts for STOCK.
 Every documented key is present; unknown values stay nil so this function is
@@ -376,9 +409,13 @@ identifying fields keep their values: analysing one security needs its code,
 name and sector, unlike the anonymous aggregate rows of `ths-ai--market-facts'.
 
 INFO, when given, is the plist `ths-info-collect' hands to its callback.  The
-information factors (`:news', `:industry', `:financials', `:announcements')
-are appended from `ths-ai--info-facts'; a factor that is switched off or came
-back empty contributes no key at all, so the prompt prints no line for it.
+information factors (`:news', `:industry', `:financials', `:announcements') and
+the background readings (`:macro', plus the market-wide amount as
+`:market-turnover') are appended from `ths-ai--info-facts'; a factor that is
+switched off or came back empty contributes no key at all, so the prompt prints
+no line for it.  The market-wide amount cannot reuse `:turnover' here — that key
+already carries the security's turnover ratio — so it is renamed to
+`:market-turnover' while it enters this plist.
 The `:market' key is the security's market prefix (`ths-data-market-key'); it is
 not part of `ths-ai--stock-fact-order', so it never reaches the prompt — the
 report uses it to tell a missing industry reading from an absent source.
@@ -415,9 +452,17 @@ Callers that pass STOCK alone keep exactly the local-market facts."
            :bid-volume (ths-ai--book-volume (ths-data-book stock) 'bid)
            :recent-trades (ths-ai--recent-trades (plist-get stock :trades)))
      (let ((extra (ths-ai--info-facts info)))
-       (cl-loop for key in '(:news :industry :financials :announcements)
+       ;; `:turnover' 在个股事实里已经被「换手率(%)」占用（本函数自己的基准键），
+       ;; 两市成交额因此走专用键 `:market-turnover'：同名不同义会让提示词渲染出
+       ;; 两行同键的数据，并让报告的宏观小节把换手率当成成交额。
+       (cl-loop for (key . target) in '((:news . :news)
+                                        (:industry . :industry)
+                                        (:financials . :financials)
+                                        (:announcements . :announcements)
+                                        (:macro . :macro)
+                                        (:turnover . :market-turnover))
                 when (plist-member extra key)
-                append (list key (plist-get extra key)))))))
+                append (list target (plist-get extra key)))))))
 
 (defun ths-ai--index-facts (index)
   "Return name, price, change and percent for the market INDEX."
@@ -536,10 +581,13 @@ KIND is `stock' for a single security or `market' for overall breadth."
     (:ask-volume . "卖盘挂单总量(手)") (:bid-volume . "买盘挂单总量(手)")
     (:recent-trades . "最近成交")
     (:news . "消息面(新闻)") (:industry . "所属行业与行业涨跌")
-    (:financials . "财报要点") (:announcements . "近期公告"))
+    (:financials . "财报要点") (:announcements . "近期公告")
+    (:macro . "外围与宏观") (:market-turnover . "两市成交额(元)"))
   "Stock fact keys with their prompt labels, in display order.
-The last four rows are information factors: `ths-ai--prompt' skips any of them
-that `ths-ai--info-facts' omitted, so a switched-off factor prints no line.")
+The last six rows are information factors: `ths-ai--prompt' skips any of them
+that `ths-ai--info-facts' omitted, so a switched-off factor prints no line.
+`:market-turnover' (not `:turnover') carries the market-wide amount because
+`:turnover' already means the security's turnover ratio in this list.")
 
 (defconst ths-ai--market-fact-order
   '((:indices . "指数") (:up-count . "上涨家数") (:down-count . "下跌家数")
@@ -555,11 +603,14 @@ The last two rows are information factors and obey the same omission rule as
 the stock list.")
 
 (defconst ths-ai--stock-info-keys
-  '(:news :industry :financials :announcements)
+  '(:news :industry :financials :announcements :macro :market-turnover)
   "Stock fact keys that describe external information and get their own fence.
 Their strings were already folded, fence-safe and trimmed to the factor's own
 budget by `ths-ai--info-facts', so `ths-ai--prompt' hands a very wide width to
-the renderer instead of cutting them to 32 columns a second time.")
+the renderer instead of cutting them to 32 columns a second time.
+`:turnover' is deliberately absent: on a stock fact list it is the local
+turnover ratio and belongs in the `<<<DATA' block, while the market-wide amount
+travels as `:market-turnover'.")
 
 (defconst ths-ai--market-info-keys
   '(:macro :turnover)
@@ -1342,13 +1393,19 @@ readings drop theirs."
 
 (defun ths-ai--macro-section (facts analysis)
   "Return the 外围与宏观 Org block, or nil when the factor is off or empty.
-The block renders only when FACTS carries `:macro' or `:turnover'.  The macro
-factor is off by default and a switched-off factor prints nothing at all: a
-\"数据不足\" line here would report a failure that is really a configuration
+The block renders only when FACTS carries `:macro' or a market-wide amount.  The
+macro factor is off by default and a switched-off factor prints nothing at all:
+a \"数据不足\" line here would report a failure that is really a configuration
 choice.  The fact side is the readings plus the market-wide turnover, the model
-side is `macro.implication'."
+side is `macro.implication'.  The amount is read from `:market-turnover' first
+and falls back to `:turnover': on a stock fact list `:turnover' is the local
+turnover ratio, while the market-wide amount arrives as `:market-turnover';
+market facts carry only `:turnover'."
   (let ((macro (plist-get facts :macro))
-        (turnover (plist-get facts :turnover)))
+        ;; 个股事实的 `:turnover' 是换手率，两市成交额在个股路径上是
+        ;; `:market-turnover'；盘面事实没有该键，仍用 `:turnover'。
+        (turnover (or (plist-get facts :market-turnover)
+                      (plist-get facts :turnover))))
     (when (or macro turnover)
       (let* ((readings (and macro (ths-ai--macro-readings-line macro)))
              (overnight (and macro (ths-ai--overnight-line
@@ -1973,7 +2030,7 @@ buffers without reactive state still get a stock analysis."
     (or (and id (ths-data-find id))
         (car ths-data-stocks))))
 
-(defun ths-ai--signature (kind)
+(defun ths-ai--signature (kind &optional info)
   "Return the data signature that invalidates a KIND cached analysis.
 Book, trades, amount and turnover are deliberately absent: they move on every
 tick and would defeat the cache without improving the analysis.  The market
@@ -1981,7 +2038,12 @@ branch carries the breadth counters and the average change (one decimal) because
 the prompt asks the model for a breadth conclusion: a rotation that leaves the
 indices and the stock count untouched still changes what the model must say.
 Rounding the average keeps floating point noise from invalidating the cache on
-every tick."
+every tick.
+
+INFO, when given, is the collection the analysis would be built from; its
+`ths-ai--info-digest' is appended to both branches, so a new headline, a new
+announcement, a new report period or a moved industry reading invalidates the
+cached analysis while a re-fetch of the same factors does not."
   (if (eq kind 'market)
       (let* ((changes (mapcar #'ths-data-change ths-data-stocks))
              (known (delq nil changes))
@@ -1995,7 +2057,8 @@ every tick."
               :up (seq-count (lambda (change) (and change (> change 0))) changes)
               :down (seq-count (lambda (change) (and change (< change 0))) changes)
               :flat (seq-count (lambda (change) (and change (= change 0))) changes)
-              :average-change (when average (string-to-number (format "%.1f" average)))))
+              :average-change (when average (string-to-number (format "%.1f" average)))
+              :info-digest (ths-ai--info-digest info)))
     (let ((stock (ths-ai--selected-stock)))
       (when stock
         (list :id (ths-data-id stock)
@@ -2003,12 +2066,16 @@ every tick."
               :change (ths-data-change stock)
               :time (plist-get stock :time)
               :intraday-date (plist-get stock :intraday-date)
-              :candle-close (plist-get (car (last (plist-get stock :candles))) :close))))))
+              :candle-close (plist-get (car (last (plist-get stock :candles))) :close)
+              :info-digest (ths-ai--info-digest info))))))
 
-(defun ths-ai--cache-fresh-p (entry kind)
-  "Return non-nil when ENTRY holds a KIND analysis that is still usable."
+(defun ths-ai--cache-fresh-p (entry kind &optional info)
+  "Return non-nil when ENTRY holds a KIND analysis that is still usable.
+INFO is the collection the new analysis would be built from; it is passed to
+`ths-ai--signature', so an unchanged market with fresher information is not
+served from the cache."
   (and (plist-get entry :analysis)
-       (equal (plist-get entry :signature) (ths-ai--signature kind))
+       (equal (plist-get entry :signature) (ths-ai--signature kind info))
        (let ((generated (plist-get entry :generated-at)))
          (and (numberp generated)
               (< (- (float-time) generated) ths-ai-cache-seconds)))))
@@ -2027,49 +2094,107 @@ FACTS is computed by the caller, which keeps the same snapshot for the prompt
 and for the report the reply ends up in."
   (ths-ai--prompt facts kind))
 
+(defun ths-ai--analyze-request (key facts info id name generation buffer session)
+  "Ask the model for the KEY analysis built from FACTS.
+INFO is the collection the facts came from; it travels into `ths-ai--finish' so
+the stored signature carries its digest.  ID and NAME identify the analysed
+security.  BUFFER and SESSION are the dashboard and the session the run started
+under: a reply whose session no longer matches is dropped, exactly like
+`ths--fetch'.  The request is registered under KEY only when the reply did not
+arrive synchronously — a synchronous reply has already cleared its own
+registration, and re-registering it would short-circuit every later run."
+  (let ((request-done nil)
+        (prompt (ths-ai--request-prompt facts key)))
+    (let ((request-cancel
+           (ths-ai-request
+            prompt
+            (lambda (text failure)
+              (setq request-done t)
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (let ((current (ths-ai--session)))
+                    (when (and current (eq session current))
+                      (ths-ai--finish key key text failure generation
+                                      facts id name info))))))
+            key)))
+      (unless request-done
+        (puthash key (or request-cancel #'ignore)
+                 (ths-ai--requests-table))))))
+
+(defun ths-ai--analyze-collected (key info force generation buffer session)
+  "Continue the KEY analysis with the collection INFO.
+The collection's registration is cleared here, before the cache is consulted:
+a cache hit must not leave a placeholder behind, or the duplicate guard would
+short-circuit every later run.  A collection that arrives after a newer run owns
+the key is dropped without touching the registration.  FORCE skips the cache;
+GENERATION, BUFFER and SESSION are the ones the run started with."
+  (when (and (buffer-live-p buffer)
+             (or (null generation)
+                 (eql generation ths-ai--generation))
+             (with-current-buffer buffer
+               (let ((current (ths-ai--session)))
+                 (and current (eq session current)))))
+    (with-current-buffer buffer
+      (remhash key (ths-ai--requests-table))
+      (let* ((stock (and (eq key 'stock) (ths-ai--selected-stock)))
+             (facts (pcase key
+                      ('stock (ths-ai--stock-facts stock info))
+                      ('market (ths-ai--market-facts ths-data-indices
+                                                     ths-data-stocks info))))
+             (id (and stock (ths-data-id stock)))
+             (name (plist-get facts :name)))
+        (if (and (not force)
+                 (ths-ai--cache-fresh-p (gethash key (ths-ai--results-table))
+                                        key info))
+            ;; 命中：占位已在上面清掉，后续按 `A' 仍能走到这里。
+            (ths-ai--present)
+          (ths-ai--analyze-request key facts info id name generation buffer
+                                   session))))))
+
 (defun ths-ai--analyze-one (key force &optional generation)
-  "Request the KEY analysis of this buffer unless it is in flight or cached.
-FORCE ignores the cache.  GENERATION is the `ths-ai--generation' value of the
-run that asks; it travels with the reply so a superseded answer is discarded.
+  "Collect the information of KEY and then request its analysis.
+The order is fixed: collect, build the facts, look the cache up with the
+collection's digest, and only then spend a request.  FORCE ignores the cache.
+GENERATION is the `ths-ai--generation' value of the run that asks; it travels
+with both stages so a superseded run can neither clear the newer run's
+registration nor store its own answer.
+
 Only the stock analysis needs a selected stock; it is skipped so that the market
-analysis still runs."
-  (let* ((stock (and (eq key 'stock) (ths-ai--selected-stock)))
-         (facts (pcase key
-                  ('stock (when stock (ths-ai--stock-facts stock)))
-                  ('market (ths-ai--market-facts ths-data-indices ths-data-stocks))))
-         (id (and stock (ths-data-id stock)))
-         (name (plist-get facts :name)))
+analysis still runs.  The market analysis collects with a nil stock, which asks
+the data layer for nothing symbol-specific — its facts stay the dashboard
+aggregates.
+
+While the collection runs the key is already registered, with a closure that
+flags `cancelled' and aborts the collection, so `ths-ai--cancel' and `ths--stop'
+can interrupt this stage exactly like an in-flight model request: the reply of a
+cancelled collection is dropped."
+  (let ((stock (and (eq key 'stock) (ths-ai--selected-stock))))
     (cond
      ((and (eq key 'stock) (null stock)) nil)
      ((gethash key (ths-ai--requests-table)) nil)
-     ((and (not force)
-           (ths-ai--cache-fresh-p (gethash key (ths-ai--results-table)) key))
-      (ths-ai--present))
      (t
       (let ((buffer (current-buffer))
             (session (ths-ai--session))
-            (completed nil)
-            (prompt (ths-ai--request-prompt facts key)))
-        (let ((cancel
-               (ths-ai-request
-                prompt
-                (lambda (text failure)
-                  (setq completed t)
-                  (when (buffer-live-p buffer)
-                    (with-current-buffer buffer
-                      (let ((current (ths-ai--session)))
-                        ;; Same strict predicate as `ths--fetch': a reply is only
-                        ;; stored when the buffer still carries the session the
-                        ;; request was started under.  A nil session means the
-                        ;; dashboard was torn down, so the reply is dropped.
-                        (when (and current (eq session current))
-                          (ths-ai--finish key key text failure
-                                          generation facts id name))))))
-                key)))
-          ;; A synchronous reply (mock, unconfigured backend, cache) has already
-          ;; cleared its own state, so only a real in-flight request is recorded.
-          (unless completed
-            (puthash key (or cancel #'ignore) (ths-ai--requests-table))))
+            (cancelled nil)
+            (collect-cancel nil))
+        ;; ① 先占位：collect 的取消句柄要等它返回才有，但用户在此之前就可能按
+        ;; `C-u A' 或关闭看板；占位闭包读到的是下面 `setq' 之后的句柄。
+        ;; 这是该 key 在 collect 阶段的唯一登记，collect 返回后也不再换成句柄
+        ;; 本身：换成句柄就丢了 `cancelled' 标记，取消后的回调会照常发请求。
+        (puthash key
+                 (lambda ()
+                   (setq cancelled t)
+                   (when (functionp collect-cancel)
+                     (ignore-errors (funcall collect-cancel))))
+                 (ths-ai--requests-table))
+        ;; ② 启动收集（回调只有一次，且只有未被取消时才继续）
+        (setq collect-cancel
+              (ths-info-collect
+               stock
+               (lambda (info _errors)
+                 (unless cancelled
+                   (ths-ai--analyze-collected key info force generation
+                                              buffer session)))))
         nil)))))
 
 (defun ths-ai-analyze (&optional force)
@@ -2103,7 +2228,7 @@ in-flight registration."
   (when (fboundp 'ths--publish)
     (ths--publish)))
 
-(defun ths-ai--finish (key kind text failure &optional generation facts id name)
+(defun ths-ai--finish (key kind text failure &optional generation facts id name info)
   "Store the outcome of a KEY request of KIND and refresh the report.
 TEXT is the model reply and FAILURE a Chinese message.  GENERATION is the
 `ths-ai--generation' value the request was started in: a reply that arrives
@@ -2112,7 +2237,9 @@ run — is dropped here, before it can clear the newer request's in-flight
 registration or overwrite its result.  FACTS, ID and NAME are the data snapshot
 the request was built from; ID is `ths-data-id' of the analysed security, which
 is stored as `:id' so the report and the panel keep describing the security that
-was analysed even when two markets share a provider code.
+was analysed even when two markets share a provider code.  INFO is the
+collection the facts were built from; the stored signature carries its digest,
+so the next run compares information as well as quotes.
 
 A failure keeps the previous analysis only when it belongs to the same security,
 and drops the timestamp, so the next run retries instead of serving a stale
@@ -2130,7 +2257,7 @@ report as if it were fresh."
         (puthash key (list :error error
                            :id id
                            :name name
-                           :signature (ths-ai--signature key)
+                           :signature (ths-ai--signature key info)
                            :analysis (and same-security (plist-get old :analysis))
                            :facts (and same-security (plist-get old :facts))
                            :generated-at nil)
@@ -2144,7 +2271,7 @@ report as if it were fresh."
                            :name name
                            :error nil
                            :generated-at (float-time)
-                           :signature (ths-ai--signature key))
+                           :signature (ths-ai--signature key info))
                  table)
         (ths-ai--publish)
         (ths-ai--present))))))

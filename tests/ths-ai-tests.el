@@ -42,6 +42,27 @@
       ths-auto-fetch nil
       ths-buffer-name " *ths-ai-test*")
 
+;;;; 离线保护：编排层现在先调用 `ths-info-collect'
+
+(defun ths-ai-test--offline-http (_url _params callback)
+  "Stand-in for `ths-info--http' that fails immediately and touches no process.
+`ths-ai--analyze-one' collects before it asks the model, so every test that
+drives the orchestration layer — not only the ones below — would otherwise run
+curl.  Failing every source is exactly what a collection with no data available
+produces: an empty INFO and one error per factor.  The no-op cancel keeps
+`ths-info-collect' contract intact.
+
+The stub is installed as an `:override' advice on the single process-starting
+function, not on `ths-info-collect' itself: the tests of that module replace
+`ths-info--http' with `cl-letf', which takes precedence over the advice, so
+their own stubs keep working."
+  (funcall callback nil 7)
+  (lambda () nil))
+
+(require 'ths-info nil t)
+(unless (advice-member-p #'ths-ai-test--offline-http 'ths-info--http)
+  (advice-add 'ths-info--http :override #'ths-ai-test--offline-http))
+
 ;;;; 固定数据
 
 (defconst ths-ai-test--stock-json-template
@@ -1460,5 +1481,208 @@ announcement carries a body (3000 chars) and a page count."
     (let ((report (ths-ai--report nil nil market nil on)))
       (dolist (heading '("** 消息面" "** 行业位置" "** 财报要点" "** 公告解读"))
         (should-not (string-match-p (concat "^" (regexp-quote heading) "$") report))))))
+
+;;;; 信息收集编排（B6：分析前先收集外部信息）
+
+;; 本组所有用例都 mock `ths-info-collect' 与 `ths-ai-request'：collect 的
+;; 回调由用例显式交付，模型请求的回调同样由用例显式回答，全程零网络、零计时器。
+
+(defvar ths-ai-test--collect-calls 0
+  "Number of times the stubbed `ths-info-collect' was called.")
+
+(defvar ths-ai-test--collect-pending nil
+  "Stack of (STOCK . CALLBACK) pairs the collect stub has not delivered yet.")
+
+(defvar ths-ai-test--collect-cancels 0
+  "Number of times a collect cancel handle returned by the stub was called.")
+
+(defvar ths-ai-test--request-count 0
+  "Number of times the stubbed `ths-ai-request' was called.")
+
+(defvar ths-ai-test--request-prompts nil
+  "Stack of prompts the stubbed `ths-ai-request' received, newest first.")
+
+(defvar ths-ai-test--request-pending nil
+  "Stack of reply callbacks the request stub has not been answered yet.")
+
+(defmacro ths-ai-test--with-collect-and-request (&rest body)
+  "Run BODY with `ths-info-collect' and `ths-ai-request' stubbed and offline.
+The collect stub keeps its callback (deliver it with
+`ths-ai-test--deliver-info') and returns a cancel handle that only counts; the
+request stub keeps its reply callback (answer it with
+`ths-ai-test--answer-request') and never calls back on its own."
+  (declare (indent 0))
+  `(let ((ths-ai-test--collect-calls 0)
+         (ths-ai-test--collect-pending nil)
+         (ths-ai-test--collect-cancels 0)
+         (ths-ai-test--request-count 0)
+         (ths-ai-test--request-prompts nil)
+         (ths-ai-test--request-pending nil))
+     (cl-letf (((symbol-function 'ths-info-collect)
+                (lambda (stock callback)
+                  (setq ths-ai-test--collect-calls (1+ ths-ai-test--collect-calls))
+                  (push (cons stock callback) ths-ai-test--collect-pending)
+                  (lambda ()
+                    (setq ths-ai-test--collect-cancels
+                          (1+ ths-ai-test--collect-cancels)))))
+               ((symbol-function 'ths-ai-request)
+                (lambda (prompt callback &optional _kind)
+                  (setq ths-ai-test--request-count (1+ ths-ai-test--request-count))
+                  (push prompt ths-ai-test--request-prompts)
+                  (push callback ths-ai-test--request-pending)
+                  (lambda () nil))))
+       ,@body)))
+
+(defun ths-ai-test--deliver-info (&optional info)
+  "Deliver INFO to the newest pending collect callback, as a timeout would.
+A nil INFO is the partial result of a collection that timed out before any
+factor arrived."
+  (let ((pair (pop ths-ai-test--collect-pending)))
+    (should pair)
+    (funcall (cdr pair) info nil)))
+
+(defun ths-ai-test--answer-request (text &optional failure)
+  "Answer the newest pending model request with TEXT or FAILURE."
+  (let ((callback (pop ths-ai-test--request-pending)))
+    (should callback)
+    (funcall callback text failure)))
+
+(defun ths-ai-test--info-with-newer-news ()
+  "Return `ths-ai-test--info' with a different newest headline time.
+Only the digest part changes: the headline count stays, so the cache is
+invalidated by the time of the newest headline alone."
+  (let ((info (copy-tree (ths-ai-test--info))))
+    (setcar (plist-get info :news)
+            (plist-put (car (plist-get info :news)) :time "2026-10-30 09:00:00"))
+    info))
+
+(ert-deftest ths-ai-analyze-collects-before-request ()
+  ;; 顺序契约：collect 未回调前不发模型请求，回调后才发，且提示词带信息面围栏。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (unwind-protect
+          (progn
+            (ths-ai--analyze-one 'stock nil)
+            (should (= 1 ths-ai-test--collect-calls))
+            (should (= 0 ths-ai-test--request-count))
+            (ths-ai-test--deliver-info (ths-ai-test--info))
+            (should (= 1 ths-ai-test--request-count))
+            (let ((prompt (car ths-ai-test--request-prompts)))
+              (should (string-match-p "<<<INFO" prompt))
+              (should (string-match-p "消息面(新闻)" prompt))))
+        (ths-ai-test--cleanup-report)))))
+
+(ert-deftest ths-ai-analyze-dedupes-during-collect ()
+  ;; collect 挂起期间再按 `A'：collect 与模型请求都不得重复发起。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (ths-ai--analyze-one 'stock nil)
+      (ths-ai--analyze-one 'stock nil)
+      (should (= 1 ths-ai-test--collect-calls))
+      (should (= 0 ths-ai-test--request-count)))))
+
+(ert-deftest ths-ai-analyze-cancel-during-collect ()
+  ;; 取消要能打断 collect 阶段：置 cancelled + 调 collect 的 cancel，
+  ;; 之后到达的回调被丢弃，占位不再残留。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (ths-ai--analyze-one 'stock nil)
+      (should (gethash 'stock (ths-ai--requests-table)))
+      (ths-ai--cancel 'stock)
+      (should (= 1 ths-ai-test--collect-cancels))
+      (ths-ai-test--deliver-info (ths-ai-test--info))
+      (should (= 0 ths-ai-test--request-count))
+      (should-not (gethash 'stock (ths-ai--requests-table))))))
+
+(ert-deftest ths-ai-analyze-cache-hit-clears-placeholder ()
+  ;; 命中缓存也必须清占位，否则该 key 被去重守卫永久短路。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (unwind-protect
+          (progn
+            (ths-ai--analyze-one 'stock nil)
+            (ths-ai-test--deliver-info (ths-ai-test--info))
+            (should (= 1 ths-ai-test--request-count))
+            (ths-ai-test--answer-request (ths-ai-test--stock-json) nil)
+            (should (plist-get (gethash 'stock ths-ai--results) :analysis))
+            ;; 第二次：同签名 → 缓存命中，不发请求，占位为 nil。
+            (ths-ai--analyze-one 'stock nil)
+            (ths-ai-test--deliver-info (ths-ai-test--info))
+            (should (= 1 ths-ai-test--request-count))
+            (should-not (gethash 'stock (ths-ai--requests-table)))
+            ;; 第三次：仍能进入缓存判定（collect 被再次调用），不是被永久去重。
+            (ths-ai--analyze-one 'stock nil)
+            (should (= 3 ths-ai-test--collect-calls))
+            (ths-ai-test--deliver-info (ths-ai-test--info))
+            (should (= 1 ths-ai-test--request-count))
+            (should-not (gethash 'stock (ths-ai--requests-table))))
+        (ths-ai-test--cleanup-report)))))
+
+(ert-deftest ths-ai-analyze-info-digest-invalidates-cache ()
+  ;; 报价与盘面都没变，只有新闻首条时间变了 → 缓存必须失效。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (unwind-protect
+          (progn
+            (ths-ai--analyze-one 'stock nil)
+            (ths-ai-test--deliver-info (ths-ai-test--info))
+            (should (= 1 ths-ai-test--request-count))
+            (ths-ai-test--answer-request (ths-ai-test--stock-json) nil)
+            (ths-ai--analyze-one 'stock nil)
+            (ths-ai-test--deliver-info (ths-ai-test--info-with-newer-news))
+            (should (= 2 ths-ai-test--request-count)))
+        (ths-ai-test--cleanup-report)))))
+
+(ert-deftest ths-ai-analyze-timeout-still-requests ()
+  ;; collect 超时：回调仍然到达（info 为空），分析照发，提示词里没有信息面。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (unwind-protect
+          (progn
+            (ths-ai--analyze-one 'stock nil)
+            (ths-ai-test--deliver-info nil)
+            (should (= 1 ths-ai-test--request-count))
+            (let ((prompt (car ths-ai-test--request-prompts)))
+              (should-not (string-match-p "<<<INFO" prompt))
+              (should-not (string-match-p "消息面(新闻)" prompt))
+              (should-not (string-match-p "外围与宏观" prompt))))
+        (ths-ai-test--cleanup-report)))))
+
+(ert-deftest ths-ai-analyze-placeholder-cleared-after-error ()
+  ;; 模型请求立即失败：占位已清、结果带 :error，再按 `A' 能重新发起。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (unwind-protect
+          (progn
+            (ths-ai--analyze-one 'stock nil)
+            (ths-ai-test--deliver-info (ths-ai-test--info))
+            (ths-ai-test--answer-request nil "网络错误")
+            (should-not (gethash 'stock (ths-ai--requests-table)))
+            (should (plist-get (gethash 'stock ths-ai--results) :error))
+            (ths-ai--analyze-one 'stock nil)
+            (should (= 2 ths-ai-test--collect-calls))
+            (ths-ai-test--deliver-info (ths-ai-test--info))
+            (should (= 2 ths-ai-test--request-count)))
+        (ths-ai-test--cleanup-report)))))
+
+(ert-deftest ths-ai-stock-facts-include-macro ()
+  ;; B5 遗留：个股事实也要带宏观读数，报告的第五节才渲染得出来。
+  ;; 两市成交额走 `:market-turnover'，个股自己的换手率仍留在行情块里。
+  (let ((ths-ai-macro-enabled t)
+        (ths-ai-announcement-body-chars 20))
+    (let* ((facts (ths-ai--stock-facts (ths-ai-test--stock) (ths-ai-test--info)))
+           (prompt (ths-ai--prompt facts 'stock)))
+      (should (plist-member facts :macro))
+      (should (numberp (plist-get (plist-get facts :macro) :fx-usdcny)))
+      (should (numberp (plist-get facts :market-turnover)))
+      ;; 个股换手率没有被两市成交额顶掉。
+      (should (plist-member facts :turnover))
+      (should (string-match-p "外围与宏观" prompt))
+      (should (string-match-p "^两市成交额(元): " prompt))
+      (should (string-match-p "^换手率(%): " prompt))))
+  ;; 默认关闭：既无 `:macro' 也无成交额，个股提示词与改动前一致。
+  (let ((facts (ths-ai--stock-facts (ths-ai-test--stock) (ths-ai-test--info))))
+    (should-not (plist-member facts :macro))
+    (should-not (plist-member facts :market-turnover))))
 
 ;;; ths-ai-tests.el ends here
