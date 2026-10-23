@@ -1,11 +1,18 @@
 # emacs-ths AI 分析接入信息面与基本面因子
 
+> 状态：已完成并归档（2026-10-23）
+
 ## 当前状态
 
-- 阶段：Phase 2（Plan）· 待用户确认
+- 阶段：已完成（归档 2026-10-23）· 任务 B1–B10 全部落地
 - 已确认：方案 ✅（用户 2026-10-23 确认：仓库自己抓公开接口；因子取「最小集 + 财报公告 + 宏观可选」；四个默认值同意）
-- 前置计划：`2026-10-23-ths-hk-us-finish.md`（必须先完成，本计划在其基线上执行）
-- 下一步：plan-reviewer 独立审查 → 用户确认计划 → Phase 3
+- 前置计划：`2026-10-23-ths-hk-us-finish.md`（已先行完成并归档至 `openspec/completed/`）
+- 分支与合入：`feat/ai-info-factors` → `master`（`--no-ff` 合并）
+- 终验（2026-10-23，B10）：
+  - L1 严格编译 9/9 源文件零 error 零 warning（`make compile`）+ 9/9 根目录 `.el` `check-parens` OK + 无 `.elc` 残留
+  - L2 `make check` = `267 tests / 267 expected / 0 unexpected`，exit 0
+  - L3 `make live-check` = `30 checks, 6 skipped, 0 failed, ok`，exit 0（5 项东财 skip 为连接层不可达，1 项同花顺行业涨跌 skip 为源侧返回反爬 HTML 页）
+  - L4 `emacs -Q --batch` 离线 headless 冒烟 14/14 断言通过：`ths-ai--stock-facts` 的 `:news` 非空、提示词含 `<<<DATA` / `<<<INFO` / `消息面(新闻)`、报告含 `** 消息面` / `** 行业位置` / `** 财报要点` / `** 公告解读`，宏观开关关闭时无 `** 外围与宏观`、打开后两处均出现
 
 ## 目标
 
