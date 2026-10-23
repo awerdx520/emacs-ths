@@ -39,7 +39,10 @@ is the overall watchdog that delivers a partial result."
 (defcustom ths-info-body-limit 2097152
   "Maximum response body size in bytes, 2 MiB by default.
 The limit is enforced by curl (`--max-filesize'), whose exit status 63 means
-the body was rejected before it ever reached this process."
+the body was rejected before it ever reached this process.  A chunked response
+carries no `Content-Length', so curl has nothing to compare the limit against
+and accepts such a body however large it is: the limit is a cheap guard for the
+common case, not a hard cap (see `openspec/tech-debt.md')."
   :type 'natnum :group 'ths)
 
 (defconst ths-info--curl-program "curl"
@@ -70,7 +73,24 @@ ERRORS, so a wrong assumption never fabricates numbers.")
 
 (defconst ths-info--macro-symbols
   "fx_susdcny,fx_shkdcny,DINIW,hf_CL,hf_GC,hf_CHA50CFD,hf_HSI,int_dji,int_nasdaq,int_sp500"
-  "Macro keys fetched in one Sina batch so that the panel costs one request.")
+  "Macro keys fetched in one Sina batch so that the panel costs one request.
+This is the fallback for `ths-ai-macro-symbols', which is the user option and
+wins whenever `ths-ai.el' is loaded; the two defaults are kept identical.")
+
+;; `ths-ai-macro-symbols' lives in `ths-ai.el', which is loaded on top of this
+;; module and might not be loaded at all (`ths-info' is usable standalone).
+;; Declaring it here keeps the byte compiler from reporting a free variable and
+;; lets `ths-info--macro-url' read it through `boundp'.
+(defvar ths-ai-macro-symbols)
+
+(defun ths-info--macro-url-symbols ()
+  "Return the macro panel symbols, preferring the user option.
+`ths-ai-macro-symbols' is the documented switch; the constant is only the
+fallback for a session that never loaded `ths-ai.el'.  Reading the option here
+is what makes it a live setting instead of a dead defcustom."
+  (if (boundp 'ths-ai-macro-symbols)
+      ths-ai-macro-symbols
+    ths-info--macro-symbols))
 
 (defconst ths-info--macro-readings
   '(("fx_susdcny" :fx-usdcny 1)
@@ -117,11 +137,12 @@ The US report is a long table: one row per metric, grouped by `REPORT'.")
 
 (defconst ths-info--yoy-keys
   '((:revenue . :revenue-yoy)
-    (:net-profit . :profit-yoy)
-    (:eps . :eps-yoy)
-    (:roe . :roe-yoy)
-    (:gross-margin . :gross-margin-yoy))
-  "Year-on-year key per metric; `:net-profit' maps to `:profit-yoy'.")
+    (:net-profit . :profit-yoy))
+  "Year-on-year key per metric; `:net-profit' maps to `:profit-yoy'.
+Only the metrics the facts layer actually carries have an entry: the US long
+table also reports `YOY_RATIO' for EPS, ROE and gross margin, but no consumer
+reads `:eps-yoy' / `:roe-yoy' / `:gross-margin-yoy' (`ths-ai--financial-metrics'
+has none of them), so mapping them would only compute values nobody uses.")
 
 (defconst ths-info--hq-regexp
   "var[ \t]+hq_str_\\([A-Za-z0-9_]+\\)=\"\\([^\"]*\\)\""
@@ -313,8 +334,10 @@ underscored spelling with `REPORT_DATE排序列不存在' (probed 2026-10-23)."
           code))
 
 (defun ths-info--macro-url ()
-  "Return the single Sina batch URL for every macro reading."
-  (concat "https://hq.sinajs.cn/list=" ths-info--macro-symbols))
+  "Return the single Sina batch URL for every macro reading.
+The symbol list comes from `ths-ai-macro-symbols', via
+`ths-info--macro-url-symbols', so a customized panel is what gets fetched."
+  (concat "https://hq.sinajs.cn/list=" (ths-info--macro-url-symbols)))
 
 (defun ths-info--turnover-url ()
   "Return the Sina batch URL for the Shanghai and Shenzhen turnover."
@@ -529,7 +552,13 @@ exit status otherwise, with BODY nil; callers translate it through
 `ths-info--map-exit-status'.  `ths-info-collect' deliberately parses in its
 own callback instead of through `:parser', so that a malformed body is
 attributed to its source and recorded in ERRORS.  Return a cancel function:
-after it runs the callback is never invoked again."
+after it runs the callback is never invoked again.
+
+The callback is always delivered asynchronously, including the failure taken
+when `make-process' itself signals: a synchronous call would let
+`ths-info-collect' finish before it has assembled the remaining requests, and
+every factor after the first would vanish from ERRORS.  The cancel function
+also suppresses that deferred delivery, so cancellation keeps its meaning."
   (let* ((headers (plist-get params :headers))
          (coding (or (plist-get params :coding) 'utf-8))
          (parser (plist-get params :parser))
@@ -566,7 +595,13 @@ after it runs the callback is never invoked again."
                              (funcall callback body 0))
                          (funcall callback nil status))))))))
       (error (when (buffer-live-p buffer) (kill-buffer buffer))
-             (funcall callback nil 1)))
+             ;; 延迟交付：`make-process' 抛错时若同步回调，`ths-info-collect'
+             ;; 会在装配其余请求之前就 finish，ERRORS 里只剩第一个因子，其余
+             ;; 全被吞掉。取消语义不变——已 cancelled 则不再回调。
+             (run-at-time 0 nil
+                          (lambda ()
+                            (unless cancelled
+                              (funcall callback nil 1))))))
     (lambda ()
       (setq cancelled t)
       (when (process-live-p process) (delete-process process))
@@ -587,9 +622,24 @@ expired, which keeps the offline request counts deterministic."
       (cdr entry))))
 
 (defun ths-info--cache-put (key value)
-  "Store VALUE under KEY with the current timestamp and return VALUE."
-  (puthash key (cons (float-time) value) ths-info--cache)
-  value)
+  "Store VALUE under KEY with the current timestamp and return VALUE.
+Entries older than twice `ths-info-cache-seconds' are dropped first: the TTL
+only decides whether an entry is reused, it never removes anything, so a long
+session would keep every parsed response in memory for good.  Sweeping on write
+costs one pass over the table and bounds it without a timer; twice the TTL
+leaves the just-expired generation around (still useful for debugging a cache
+miss) while keeping the table proportional to the live sources."
+  (let ((now (float-time))
+        (limit (* 2 (or ths-info-cache-seconds 0)))
+        (stale nil))
+    (maphash (lambda (entry-key entry)
+               (when (> (- now (car entry)) limit)
+                 (push entry-key stale)))
+             ths-info--cache)
+    (dolist (entry-key stale)
+      (remhash entry-key ths-info--cache))
+    (puthash key (cons now value) ths-info--cache)
+    value))
 
 ;;;; Orchestration
 
@@ -609,7 +659,9 @@ plists), `:announcements' (headline plists), `:financials' (report plists),
 stored on the first element of `:announcements' as `:content' and `:pages',
 so INFO never grows a second announcement key.
 
-ERRORS is an alist of keyword to message using the same keywords as INFO.
+ERRORS is an alist of keyword to message using the same keywords as INFO, plus
+`:announcement-body' for the body request: a body that fails does not mark the
+whole `:announcements' factor as failed, because the headlines did arrive.
 Requests run concurrently (at most eight: news, announcement list and body,
 reports, industry name and change, macro panel and turnover); a failed or
 empty source only drops its own factor.  `ths-info-timeout' bounds the whole
@@ -637,6 +689,12 @@ them for lack of a subject is not a failure and records nothing in ERRORS."
            (unless done
              (setq done t)
              (when (timerp timer) (cancel-timer timer) (setq timer nil))
+             ;; 收尾时把仍在途的请求一并中止：只取消定时器的话，那些 curl 进程会
+             ;; 一直跑到自己的 `--max-time'，其回调虽被 `done' 挡住，进程、buffer
+             ;; 与句柄仍是泄漏。全部请求已完成的自然结束路径上调 cancel 无害
+             ;; （进程已退出、buffer 已 kill），所以两种情况共用同一段收尾。
+             (dolist (cancel cancels) (ignore-errors (funcall cancel)))
+             (setq cancels nil)
              (funcall callback info (nreverse errors))))
          (fail (key message)
            (unless (assq key errors) (push (cons key message) errors)))
@@ -678,12 +736,16 @@ them for lack of a subject is not a failure and records nothing in ERRORS."
          (fetch-body (art-code)
            (when (and art-code (not done))
              (request-cached
-              :announcements (ths-info--announcement-body-url art-code)
+              ;; 正文有自己的错误键：正文抓取失败不该把整个 `:announcements'
+              ;; 标成失败——标题列表其实已经拿到了。
+              :announcement-body (ths-info--announcement-body-url art-code)
               #'ths-info--announcement-body-parse
               (lambda (body)
                 (let ((items (plist-get info :announcements)))
                   (when (and (listp items) items)
-                    (setcar items (append (car items)
+                    ;; 先拷贝再改写：ITEMS 可能直接来自 `ths-info--cache'，
+                    ;; `setcar' 原地改会把缓存里的条目一起污染。
+                    (setcar items (append (copy-sequence (car items))
                                           (list :content (plist-get body :content)
                                                 :pages (plist-get body :pages)))))))
               nil 'utf-8 (list :announcement-body art-code))))

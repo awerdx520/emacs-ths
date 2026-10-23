@@ -136,10 +136,12 @@ request pair and is only relevant to breadth analysis."
   :type 'boolean :group 'ths-ai)
 
 (defcustom ths-ai-macro-symbols
-  "fx_susdcny,DINIW,hf_CL,hf_GC,hf_CHA50CFD,hf_HSI,int_dji,int_nasdaq,int_sp500"
+  "fx_susdcny,fx_shkdcny,DINIW,hf_CL,hf_GC,hf_CHA50CFD,hf_HSI,int_dji,int_nasdaq,int_sp500"
   "Provider symbols of the macro panel, comma separated.
-Used only while `ths-ai-macro-enabled' is non-nil: 汇率（美元兑人民币）、美元指数、
-原油、黄金、A50、恒指期货与隔夜美股三大指数。"
+Used only while `ths-ai-macro-enabled' is non-nil, and read by
+`ths-info--macro-url', so customizing it changes what is actually fetched:
+汇率（美元兑人民币、港元兑人民币）、美元指数、原油、黄金、A50、恒指期货与
+隔夜美股三大指数。"
   :type 'string :group 'ths-ai)
 
 (defconst ths-ai--rating-choices '("看多" "偏多" "中性" "偏空" "看空")
@@ -246,9 +248,12 @@ BETTERP is a comparison function such as `>' or `#\'>'; calling it through
   "Report metric keys kept from a provider row; every one of them is a number.")
 
 (defconst ths-ai--macro-keys
-  '(:fx-usdcny :dollar-index :oil :gold :a50 :hsi-future :overnight)
+  '(:fx-usdcny :fx-hkdcny :dollar-index :oil :gold :a50 :hsi-future :overnight)
   "Macro reading keys kept from the provider panel.
-`:overnight' is itself a plist of the three overseas index levels.")
+`:overnight' is itself a plist of the three overseas index levels.
+`:fx-hkdcny' (港元兑人民币) is collected by `ths-info--macro-readings' and is
+listed here so the reading reaches the prompt and the report instead of being
+fetched and dropped.")
 
 (defun ths-ai--news-facts (items)
   "Return ITEMS as at most `ths-ai-news-count' news fact plists.
@@ -290,7 +295,9 @@ zeroed, so the model never reads a fabricated number."
   "Return ITEMS as at most `ths-ai-announcements-count' announcement facts.
 Only the newest announcement keeps `:content' and `:pages':
 `ths-ai-announcement-body-chars' bounds the body and 0 sends the headline only.
-`:view-count' survives as a number when the provider reported one."
+No view count is forwarded: no parser produces one
+\(`ths-info--announcements-parse' keeps title, time and art-code), so the old
+`:view-count' branch could only ever copy a field that never existed."
   (let ((index 0)
         (body-chars (or ths-ai-announcement-body-chars 0)))
     (seq-take
@@ -298,9 +305,6 @@ Only the newest announcement keeps `:content' and `:pages':
                (let ((fact (list :title (ths-ai--field (plist-get item :title)
                                                        ths-ai--info-text-width)
                                  :time (ths-ai--field (plist-get item :time)))))
-                 (let ((views (plist-get item :view-count)))
-                   (when (numberp views)
-                     (setq fact (plist-put fact :view-count views))))
                  (when (and (= index 0) (> body-chars 0))
                    (let ((content (ths-ai--field (plist-get item :content) body-chars))
                          (pages (plist-get item :pages)))
@@ -1148,7 +1152,8 @@ the ratio keys print as signed percentages.")
   "Report metrics measured in percent; the report prints them with a sign.")
 
 (defconst ths-ai--macro-labels
-  '((:fx-usdcny . "美元兑人民币") (:dollar-index . "美元指数")
+  '((:fx-usdcny . "美元兑人民币") (:fx-hkdcny . "港元兑人民币")
+    (:dollar-index . "美元指数")
     (:oil . "原油") (:gold . "黄金") (:a50 . "A50")
     (:hsi-future . "恒指期货"))
   "Labels of the macro readings, in display order.
@@ -2141,13 +2146,19 @@ The collection's registration is cleared here, before the cache is consulted:
 a cache hit must not leave a placeholder behind, or the duplicate guard would
 short-circuit every later run.  A collection that arrives after a newer run owns
 the key is dropped without touching the registration.  FORCE skips the cache;
-GENERATION, BUFFER and SESSION are the ones the run started with."
+GENERATION, BUFFER and SESSION are the ones the run started with.
+
+Every reading of buffer-local state happens inside BUFFER: the caller is the
+curl sentinel (or the collection watchdog), whose `current-buffer' is a process
+buffer at best, so `ths-ai--generation' read there would be the default 0 and
+the check would reject every collection — no analysis would ever be stored and
+the placeholder would never be cleared, short-circuiting that key for good."
   (when (and (buffer-live-p buffer)
-             (or (null generation)
-                 (eql generation ths-ai--generation))
              (with-current-buffer buffer
-               (let ((current (ths-ai--session)))
-                 (and current (eq session current)))))
+               (and (or (null generation)
+                        (eql generation ths-ai--generation))
+                    (let ((current (ths-ai--session)))
+                      (and current (eq session current))))))
     (with-current-buffer buffer
       (remhash key (ths-ai--requests-table))
       (let* ((stock (and (eq key 'stock) (ths-ai--selected-stock)))

@@ -1109,7 +1109,6 @@ announcement carries a body (3000 chars) and a page count."
         (list (list :title "关于回购股份的公告"
                     :time "2026-10-22"
                     :art-code "AN2026102201"
-                    :view-count 1234
                     :content (make-string 3000 ?公)
                     :pages 380)
               (list :title "三季度业绩预告" :time "2026-10-20"
@@ -1117,7 +1116,8 @@ announcement carries a body (3000 chars) and a page count."
                     :content "第二条公告的正文不应发送")
               (list :title "股东大会决议" :time "2026-10-18"
                     :art-code "AN2026101803"))
-        :macro (list :fx-usdcny 7.12 :dollar-index 104.3 :oil 71.5 :gold 2650.0
+        :macro (list :fx-usdcny 7.12 :fx-hkdcny 0.9102
+                     :dollar-index 104.3 :oil 71.5 :gold 2650.0
                      :a50 12800.0 :hsi-future 20500.0
                      :overnight (list :dji 42100.0 :nasdaq 18300.0))
         :turnover 1.0e12))
@@ -1151,8 +1151,8 @@ announcement carries a body (3000 chars) and a page count."
       (should (<= (string-width (plist-get (car announcements) :content)) 100))
       (should (= 380 (plist-get (car announcements) :pages)))
       (should-not (plist-get (cadr announcements) :content))
-      ;; 视图数按数字保留，供模型参考。
-      (should (= 1234 (plist-get (car announcements) :view-count))))
+      ;; 视图数不再转发：没有任何 parser 产出该字段，读取它是死代码。
+      (should-not (plist-member (car announcements) :view-count)))
     ;; body-chars = 0 时只发标题：正文键根本不出现。
     (let ((ths-ai-announcement-body-chars 0))
       (let ((announcements (plist-get (ths-ai--info-facts (ths-ai-test--info))
@@ -1182,11 +1182,19 @@ announcement carries a body (3000 chars) and a page count."
   (should-not ths-ai-macro-enabled)
   (let ((facts (ths-ai--info-facts (ths-ai-test--info))))
     (should-not (plist-member facts :macro)))
+  ;; 两份宏观代码清单必须一致：defcustom 是唯一生效来源，常量只是兜底。
+  (should (equal ths-ai-macro-symbols ths-info--macro-symbols))
   ;; 打开后才出现，且两市成交额一并带上。
   (let ((ths-ai-macro-enabled t))
     (let ((facts (ths-ai--info-facts (ths-ai-test--info))))
       (should (plist-member facts :macro))
       (should (= 7.12 (plist-get (plist-get facts :macro) :fx-usdcny)))
+      ;; 港元兑人民币已纳入 `ths-ai--macro-keys'/`--macro-labels'：抓到就要送到
+      ;; 提示词与报告，否则是「抓了不展示」的死数据。
+      (should (= 0.9102 (plist-get (plist-get facts :macro) :fx-hkdcny)))
+      (should (string-match-p
+               "港元兑人民币"
+               (ths-ai--macro-readings-line (plist-get facts :macro))))
       (should (numberp (plist-get facts :turnover))))))
 
 (ert-deftest ths-ai-stock-facts-includes-info ()
@@ -1621,6 +1629,31 @@ invalidated by the time of the newest headline alone."
       (ths-ai-test--deliver-info (ths-ai-test--info))
       (should (= 0 ths-ai-test--request-count))
       (should-not (gethash 'stock (ths-ai--requests-table))))))
+
+(ert-deftest ths-ai-analyze-callback-from-foreign-buffer ()
+  ;; collect 回调在非看板 buffer 触发（生产路径：curl sentinel / run-at-time
+  ;; 看门狗）时，分析仍必须落地、占位仍必须清理。`ths-ai--generation' 是
+  ;; buffer-local：在进程 buffer 里读到的是默认值 0，于是校验恒失败。
+  (ths-test-with-dashboard
+    (ths-ai-test--with-collect-and-request
+      (let ((probe (get-buffer-create "*probe*")))
+        (unwind-protect
+            (progn
+              ;; 看板 buffer 自己的 generation（`ths-ai-analyze' 写的就是它）。
+              (setq ths-ai--generation 7)
+              (ths-ai--analyze-one 'stock nil 7)
+              (should (= 1 ths-ai-test--collect-calls))
+              ;; 在非看板 buffer 里交付回调。
+              (with-current-buffer probe
+                (ths-ai-test--deliver-info (ths-ai-test--info)))
+              ;; 校验通过：请求已发出（不是被丢弃）。
+              (should (= 1 ths-ai-test--request-count))
+              (ths-ai-test--answer-request (ths-ai-test--stock-json) nil)
+              ;; 结果入表，且该 key 的占位已清（否则被去重守卫永久短路）。
+              (should (plist-get (gethash 'stock ths-ai--results) :analysis))
+              (should-not (gethash 'stock (ths-ai--requests-table))))
+          (when (buffer-live-p probe) (kill-buffer probe))
+          (ths-ai-test--cleanup-report))))))
 
 (ert-deftest ths-ai-analyze-cache-hit-clears-placeholder ()
   ;; 命中缓存也必须清占位，否则该 key 被去重守卫永久短路。

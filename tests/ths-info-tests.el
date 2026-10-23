@@ -563,6 +563,33 @@ OFF is a list of symbols such as `(ths-ai-macro-enabled)'."
     (should (string-match-p "白酒" decoded))
     (should (equal "白酒" (plist-get info :name)))))
 
+(ert-deftest ths-info-macro-url-honours-custom-symbols ()
+  "宏观 URL 读 `ths-ai-macro-symbols'，不再用硬编码常量。
+定制过的代码列表必须真的改变请求，否则该 defcustom 是死选项。"
+  (let ((ths-ai-macro-symbols "fx_susdcny"))
+    (should (equal "https://hq.sinajs.cn/list=fx_susdcny"
+                   (ths-info--macro-url))))
+  ;; 未定制时用默认清单：三份默认值（`ths-ai-macro-symbols'、
+  ;; `ths-info--macro-symbols' 与这里的断言）必须一致，含港股汇率。
+  (should (string-match-p "fx_shkdcny" (ths-info--macro-url))))
+
+(ert-deftest ths-info-cache-prunes-expired ()
+  "写入新条目时清扫过期条目，长会话不会无界增长。
+TTL 只决定是否复用，从不删除；没有清扫时缓存表会随会话无限增长。"
+  (let ((ths-info-cache-seconds 120)
+        (now (float-time)))
+    (clrhash ths-info--cache)
+    (unwind-protect
+        (progn
+          ;; 两倍 TTL 以上 → 应被清扫；TTL 附近 → 保留。
+          (puthash 'stale (cons (- now 1000) 'old) ths-info--cache)
+          (puthash 'acceptable (cons (- now 200) 'kept) ths-info--cache)
+          (should (equal 'stored (ths-info--cache-put 'fresh 'stored)))
+          (should-not (gethash 'stale ths-info--cache))
+          (should (equal 'kept (cdr (gethash 'acceptable ths-info--cache))))
+          (should (equal 'stored (cdr (gethash 'fresh ths-info--cache)))))
+      (clrhash ths-info--cache))))
+
 ;;;; 组 2：异步编排（`ths-info--http' 全程被 mock，零真实请求）
 
 (ert-deftest ths-info-collect-calls-all-sources ()
@@ -722,5 +749,62 @@ OFF is a list of symbols such as `(ths-ai-macro-enabled)'."
         ;; 没有标的 ≠ 抓取失败：ERRORS 保持为空。
         (should-not errors)))))
 
+(defun ths-info-test--drop-http-advices ()
+  "Remove every advice on `ths-info--http' and return the removed entries.
+`tests/ths-ai-tests.el' 在同一个 batch 进程里给 `ths-info--http' 装了 `:override'
+advice（同步失败的离线桩），它的 `cl-letf' 用户靠替换 `symbol-function' 绕开该
+advice；要验证**真实**传输层（`--max-filesize' / 延迟交付）的用例必须先把 advice
+摘掉，否则测到的是桩。返回值为 (FUNCTION . PROPS) 列表，供恢复使用。"
+  (let (entries)
+    (advice-mapc (lambda (fn props) (push (cons fn props) entries))
+                 'ths-info--http)
+    (dolist (entry entries)
+      (advice-remove 'ths-info--http (car entry)))
+    entries))
+
+(defun ths-info-test--restore-http-advices (entries)
+  "Re-install ENTRIES returned by `ths-info-test--drop-http-advices'."
+  (dolist (entry entries)
+    (advice-add 'ths-info--http :override (car entry))))
+
+(ert-deftest ths-info-collect-http-failure-records-all-sources ()
+  "传输层整体失败（`make-process' 抛错）时 ERRORS 记录全部已开启因子。
+`ths-info--http' 的错误分支必须延迟交付：同步回调会让 collect 在装配其余请求
+之前就 finish，ERRORS 里只剩第一个因子，其余被静默吞掉。"
+  (let ((advices (ths-info-test--drop-http-advices)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'make-process)
+                   (lambda (&rest _args) (error "make-process failed")))
+                  ((symbol-function 'url-retrieve)
+                   (symbol-function 'ths-info-test--network-violation))
+                  ((symbol-function 'url-retrieve-synchronously)
+                   (symbol-function 'ths-info-test--network-violation))
+                  ((symbol-function 'shell-command)
+                   (symbol-function 'ths-info-test--network-violation))
+                  ((symbol-function 'shell-command-to-string)
+                   (symbol-function 'ths-info-test--network-violation)))
+          (let ((ths-info-test--network-violations nil)
+                (ths-info-timeout 5)
+                (ths-info-cache-seconds 0))
+            (ths-info-test--with-switches nil
+              (let ((calls 0)
+                    (info 'unset)
+                    (errors nil))
+                (ths-info-collect ths-info-test--stock
+                                  (lambda (i e)
+                                    (setq calls (1+ calls) info i errors e)))
+                (should (ths-info-test--await (lambda () (> calls 0))))
+                (should (= 1 calls))
+                ;; 六个独立请求各自失败：新闻、公告列表、财报、行业名、宏观、成交额。
+                (should (= 6 (length errors)))
+                (dolist (key '(:news :announcements :financials :industry
+                               :macro :turnover))
+                  (should (string-match-p "HTTP 请求失败 (1)"
+                                          (ths-info-test--error-note errors key))))
+                (should-not info)
+                (should-not ths-info-test--network-violations)))))
+      (ths-info-test--restore-http-advices advices))))
+
 (provide 'ths-info-tests)
 ;;; ths-info-tests.el ends here
+;; ths-info-tests.el ends here
