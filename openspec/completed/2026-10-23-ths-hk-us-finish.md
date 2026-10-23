@@ -1,13 +1,16 @@
 # emacs-ths 港美股支持收尾与 AI 线合并
 
+> 状态：已完成并归档（2026-10-23；L1/L2 0 unexpected，L3/L4 见下）
+
 ## 当前状态
 
-- 阶段：Phase 2（Plan）· 待用户确认
+- 阶段：已完成（归档 2026-10-23）· 任务 0–8 全部落地
 - 已确认：方案 ✅（用户 2026-10-23 确认：先港美收尾、再 AI 信息因子；四个默认值均同意）
-- 关联计划：`2026-10-23-ths-ai-info-factors.md`（本计划完成后串行执行）
-- 前置计划：`feat/hk-us-support` 上的 `openspec/active/2026-10-22-emacs-ths-hk-us-support.md`（任务 0–5 完成，任务 6/7/8 未完成）
-- 安全点（Phase 3 首步创建）：tag `pre-hkus-finish` 指向合并前分支 tip；`stash@{0}` 为任务 6 的进行中改动
-- 下一步：plan-reviewer 独立审查 → 用户确认计划 → Phase 3
+- 关联计划：`2026-10-23-ths-ai-info-factors.md`（未开始，仍在 `openspec/active/`）
+- 前置计划：`2026-10-22-emacs-ths-hk-us-support.md`（任务 0–8 完成，已随本计划一并归档至 `openspec/completed/`）
+- 安全点（Phase 3 首步创建）：tag `pre-hkus-finish` / `pre-hkus-baseline`；`stash@{0}` 内容已由 03ec5fa 落地，合并后清理
+- 终验（2026-10-23）：L1 严格编译 8/8 零 error 零 warning + 8/8 check-parens；L2 离线 ERT `211 tests / 211 expected / 0 unexpected`（`make check` 与 `tests/run-offline.sh` 双入口）；L3 `make live-check` = `18 checks, 5 skipped`（东财本机不可达）；L4 batch 冒烟 `SMOKE ok=2`
+- 下一步：无（本计划结束）；后续由 AI 信息因子计划接管
 
 ## 目标
 

@@ -1,5 +1,8 @@
 # emacs-ths 增加港股 / 美股支持
 
+> 状态：已完成并归档（2026-10-23；L1/L2 0 unexpected，L3/L4 见下）
+> 实际验证（以实测为准）：`make check` = `211 tests / 0 unexpected`；`make live-check` = `18 checks, 5 skipped（东财本机不可达）, ok`；L4 batch 冒烟 `SMOKE ok=2`（`hk00700` / `usAAPL` 报价均落地）
+
 ## 当前状态
 
 - 阶段：Phase 3（Implement）· 进行中
