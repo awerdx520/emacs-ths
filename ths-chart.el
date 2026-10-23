@@ -31,15 +31,20 @@ Volumes remain in lots; an absent value is distinct from zero."
                          :color (if (>= price reference) (ths-theme-color 'up) (ths-theme-color 'down)))
            do (setq base price)))
 
-(defun ths-chart--volume-svg (bars width left right)
-  "Draw BARS of WIDTH between LEFT and RIGHT below the price panel."
-  (let* ((values (delq nil (mapcar (lambda (bar) (plist-get bar :volume)) bars)))
+(defun ths-chart--volume-unit (stock)
+  "Return STOCK's volume unit label, defaulting to 手 when unavailable."
+  (or (ths-data-volume-unit stock) "手"))
+
+(defun ths-chart--volume-svg (bars width left right &optional unit)
+  "Draw BARS of WIDTH between LEFT and RIGHT below the price panel in UNIT."
+  (let* ((unit (or unit "手"))
+         (values (delq nil (mapcar (lambda (bar) (plist-get bar :volume)) bars)))
          (maximum (if values (apply #'max values) 0))
          (scale (max 1.0 (float maximum))))
     (concat
      "<g id=\"volume-panel\">"
      (format (concat "<path d=\"M%.2f 246 H%.2f M%.2f 294 H%.2f\" stroke=\"" (ths-theme-color 'grid) "\"/>") left right left right)
-     (format (concat "<text x=\"%.2f\" y=\"232\" fill=\"" (ths-theme-color 'secondary) "\">成交量（手） · 最新 %s%s</text>")
+     (format (concat "<text x=\"%.2f\" y=\"232\" fill=\"" (ths-theme-color 'secondary) "\">成交量（" unit "） · 最新 %s%s</text>")
              left (ths-chart--volume-label (plist-get (car (last bars)) :volume))
              (if values "" " · 暂无数据"))
      (format (concat "<text x=\"%.2f\" y=\"250\" text-anchor=\"end\" fill=\"" (ths-theme-color 'muted) "\">%s</text>")
@@ -180,7 +185,8 @@ The SVG is self-contained; no external files, scripts or fonts are fetched."
           (format (concat "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"3.2\" fill=\"" (ths-theme-color 'point) "\"/>")
                   (x (car (last points))) (y (car (last prices))))
           (ths-chart--volume-svg
-           (ths-chart--volume-bars points (mapcar #'x points) nil base) 1.8 left right)
+           (ths-chart--volume-bars points (mapcar #'x points) nil base) 1.8 left right
+           (ths-chart--volume-unit stock))
           (ths-chart--axis-svg stock left right)
           "</g></svg>"))))))
 
@@ -237,7 +243,7 @@ Return nil when no candles are available."
                     "</g>")) "")
          (ths-chart--volume-svg
           (ths-chart--volume-bars candles (mapcar #'x (number-sequence 0 (1- n))) t)
-          body-width left right)
+          body-width left right (ths-chart--volume-unit stock))
          (mapconcat
           (lambda (i)
             (format (concat "<text class=\"date-label\" x=\"%.2f\" y=\"322\" text-anchor=\"%s\" fill=\"" (ths-theme-color 'axis) "\">%s</text>")
@@ -264,10 +270,12 @@ Return nil when no candles are available."
                (mapconcat #'identity (aref grid i) "")))
      (number-sequence 0 (1- height)) "\n")))
 
-(defun ths-chart--volume-text (bars width height heading)
+(defun ths-chart--volume-text (bars width height heading &optional unit)
   "Render BARS in WIDTH columns and HEIGHT rows, optionally with HEADING.
-Sum volumes that fall in the same terminal column, retaining its last color."
-  (let ((values (make-vector width nil)) (colors (make-vector width nil)))
+UNIT names the volume unit (手 or 股).  Sum volumes that fall in the same
+terminal column, retaining its last color."
+  (let ((values (make-vector width nil)) (colors (make-vector width nil))
+        (unit (or unit "手")))
     (dolist (bar bars)
       (when-let* ((volume (plist-get bar :volume)))
         (let ((x (plist-get bar :x)))
@@ -280,7 +288,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
        (when heading
          (concat (propertize
                   (truncate-string-to-width
-                   (concat "成交量（手） · 柱峰 " (if known (ths-chart--volume-label maximum) "--"))
+                   (concat "成交量（" unit "） · 柱峰 " (if known (ths-chart--volume-label maximum) "--"))
                    (+ width 10) 0 ?\s)
                   'face `(:foreground ,(ths-theme-color 'muted))) "\n"))
        (mapconcat
@@ -288,7 +296,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
           (concat
            (propertize
             (concat (truncate-string-to-width
-                     (cond ((not heading) "量/手")
+                     (cond ((not heading) (concat "量/" unit))
                            ((= i 0) (ths-chart--volume-label maximum))
                            ((= i (1- height)) "0") (t "")) 8 0 ?\s) " │")
             'face `(:foreground ,(ths-theme-color 'muted)))
@@ -341,7 +349,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
       (concat (ths-chart--render grid low high stock) "\n"
               (ths-chart--volume-text
                (ths-chart--volume-bars points positions nil (ths-data-chart-base stock))
-               width volume-rows heading)))))
+               width volume-rows heading (ths-chart--volume-unit stock))))))
 
 (defun ths-chart-candles (stock &optional count height)
   "Draw COUNT unadjusted candles and their volume within HEIGHT rows."
@@ -365,7 +373,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
       (concat (ths-chart--render grid low high stock) "\n"
               (ths-chart--volume-text
                (ths-chart--volume-bars candles (number-sequence 0 (* 2 (1- (length candles))) 2) t)
-               (* 2 (length candles)) volume-rows heading)))))
+               (* 2 (length candles)) volume-rows heading (ths-chart--volume-unit stock))))))
 
 (defun ths-chart-nav-rows (stock accumulated)
   "Return STOCK's available NAV rows for ACCUMULATED or unit values."

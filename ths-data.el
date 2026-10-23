@@ -31,7 +31,10 @@
   '("sz300033" "sz300750" "sh600519" "sz002594" "sh601318" "sh600036" "sh688981" "sz300059")
   "Stock/fund symbols to show, with market prefixes (of for OTC funds)."
   :type '(repeat string) :group 'ths)
-(defconst ths-data-index-symbols '("sh000001" "sz399001" "sz399006"))
+(defconst ths-data-index-symbols
+  '("sh000001" "sz399001" "sz399006" "hkHSI" "hkHSCEI" "usDJI" "us.IXIC" "us.INX")
+  "Indices shown in the dashboard strip: three A-share, two Hong Kong, three US.
+The strip truncates its tail on narrow windows instead of shrinking entries.")
 (defconst ths-data-markets
   '(("sh" :prefix "sh" :label "沪A" :fund-label "沪基" :decimals 2 :fund-decimals 3
      :volume-unit "手" :currency "CNY" :book-levels 5 :minutes 240
@@ -99,7 +102,9 @@ response's internal market field (105/106/107) and is not live-verified.")
     ("sh601318" "中国平安" "保险") ("sh600036" "招商银行" "银行")
     ("sh688981" "中芯国际" "半导体") ("sz300059" "东方财富" "证券")
     ("sh000001" "上证指数" "指数") ("sz399001" "深证成指" "指数")
-    ("sz399006" "创业板指" "指数"))
+    ("sz399006" "创业板指" "指数") ("hkHSI" "恒生指数" "指数")
+    ("hkHSCEI" "国企指数" "指数") ("usDJI" "道指" "指数")
+    ("us.IXIC" "纳指" "指数") ("us.INX" "标普500" "指数"))
   "Display names/categories only; these are not market quotes.")
 (defvar-local ths-data-stocks nil "Last successful stock snapshots in this buffer.")
 (defvar-local ths-data-indices nil "Last successful index snapshots in this buffer.")
@@ -165,23 +170,35 @@ SIGNED includes a sign for price changes.  Missing values stay unavailable."
         (format (format (if signed "%%+.%df" "%%.%df") decimals) value))
     "--"))
 
+(defun ths-data-market-label (stock)
+  "Return STOCK's display market label such as 沪A, 沪基, 港股 or 港股指数.
+The label is a market fact (the profile), so it stays correct for live
+quotes that carry no display metadata of their own."
+  (let* ((symbol (ths-data--market-symbol stock))
+         (market (ths-data-market symbol)))
+    (when market
+      (cond ((and (stringp symbol) (string-prefix-p "of" symbol))
+             (plist-get market :label))
+            ((ths-data-fund-p (list :symbol symbol))
+             (or (plist-get market :fund-label) (plist-get market :label)))
+            ((member symbol ths-data-index-symbols)
+             (or (plist-get market :index-label) (plist-get market :label)))
+            (t (plist-get market :label))))))
+
+(defun ths-data-volume-unit (stock)
+  "Return STOCK's volume unit label (手 or 股), or nil for off-exchange funds."
+  (plist-get (ths-data-market stock) :volume-unit))
+
 (defun ths-data-placeholder (symbol)
   "Return metadata for SYMBOL with no invented quote values."
   (setq symbol (ths-data-symbol symbol))
   (let* ((meta (assoc symbol ths-data--metadata))
-         (market (ths-data-market symbol))
          (fund (ths-data-fund-p (list :symbol symbol)))
          (otc (string-prefix-p "of" symbol)))
     (list :symbol symbol :code (substring symbol 2)
           :name (or (nth 1 meta) (substring symbol 2))
           :sector (or (nth 2 meta) (cond (otc "场外基金") (fund "场内基金") (t "--")))
-          :market-label (cond (otc (plist-get market :label))
-                              (fund (or (plist-get market :fund-label)
-                                        (plist-get market :label)))
-                              ((member symbol ths-data-index-symbols)
-                               (or (plist-get market :index-label)
-                                   (plist-get market :label)))
-                              (t (plist-get market :label))))))
+          :market-label (ths-data-market-label symbol))))
 
 (defun ths-data-change (stock)
   "Return percentage change for STOCK, or nil if unavailable.
@@ -195,15 +212,24 @@ OTC funds use the published return, accounting for dividend distributions."
   "Return stock matching CODE, or nil."
   (seq-find (lambda (stock) (equal code (ths-data-id stock))) ths-data-stocks))
 
+(defun ths-data--filter-field (stock key)
+  "Return STOCK's searchable KEY value, deriving the market label when absent."
+  (if (eq key :market-label)
+      (or (plist-get stock :market-label) (ths-data-market-label stock))
+    (plist-get stock key)))
+
 (defun ths-data-filter (query favorites only-favorites sorted)
-  "Filter stocks by QUERY, FAVORITES, ONLY-FAVORITES and SORTED."
+  "Filter stocks by QUERY, FAVORITES, ONLY-FAVORITES and SORTED.
+QUERY matches the symbol, code, name, sector and market label, so 港股 and
+美股 select their market.  The label is recomputed from the symbol when a
+quote carries no :market-label field of its own."
   (let ((stocks
          (seq-filter
           (lambda (stock)
             (and (or (not only-favorites) (member (ths-data-id stock) favorites))
                  (or (string-empty-p query)
                      (cl-some (lambda (key) (string-match-p (regexp-quote query)
-                                                            (or (plist-get stock key) "")))
+                                                            (or (ths-data--filter-field stock key) "")))
                               '(:symbol :code :name :sector :market-label))))) ths-data-stocks)))
     (if sorted
         (cl-stable-sort (copy-sequence stocks)

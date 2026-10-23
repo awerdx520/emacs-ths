@@ -681,4 +681,109 @@ qfqday，data 键带交易所后缀 usAAPL.OQ，行同样为数组。")
           (should-not (etaf-host-ref-position runtime 'rank-hkstock))
           (should-not (etaf-host-ref-position runtime 'rank-usstock)))))))
 
+;;; UI 展示（任务6）：详情标题/盘口/成交明细/成交量单位/指数条。
+
+(defun ths-hkus-test-hk-stock ()
+  "Return hk00700 built from the real Tencent quote; nothing is invented."
+  (append (ths-data--quote-tencent ths-hkus-test-tencent-hk-quote "hk00700")
+          (ths-data-placeholder "hk00700")))
+
+(defun ths-hkus-test-us-stock ()
+  "Return usAAPL built from the real Tencent quote; nothing is invented."
+  (append (ths-data--quote-tencent ths-hkus-test-tencent-us-quote "usAAPL")
+          (ths-data-placeholder "usAAPL")))
+
+(ert-deftest ths-hkus-book-single-level ()
+  "港美只渲染 1 档盘口：买1/卖1 存在，买5/卖5 不补，标题为「盘口 / 股」。"
+  (ths-test-with-dashboard
+    (setq ths-data-stocks (cons (ths-hkus-test-hk-stock) (ths-test-stocks)))
+    (ths--set ths--state :selected "00700")
+    (should (ths-test-visible "盘口 / 股"))
+    (should-not (ths-test-visible "五档"))
+    (should (ths-test-visible "卖1"))
+    (should (ths-test-visible "买1"))
+    (should-not (ths-test-visible "卖5"))
+    (should-not (ths-test-visible "买5"))))
+
+(ert-deftest ths-hkus-no-trades-request ()
+  "港美详情只请求图表，不请求 trades；A 股仍请求 trades。"
+  (ths-test-with-dashboard
+    (setq ths-data-stocks (append (list (ths-hkus-test-hk-stock) (ths-hkus-test-us-stock))
+                                  (ths-test-stocks)))
+    (let ((ths-auto-fetch t) calls)
+      (cl-letf (((symbol-function 'ths-data-fetch)
+                 (lambda (symbol kind &rest _) (push (cons symbol kind) calls) #'ignore)))
+        (dolist (code '("00700" "AAPL" "600519"))
+          (setq calls nil)
+          (ths--set ths--state :selected code)
+          (ths--ensure-chart t)
+          (let ((kinds (mapcar #'cdr calls)))
+            (if (equal code "600519")
+                (progn (should (memq 'trades kinds))
+                       (should (memq (plist-get (etaf-value ths--state) :chart) kinds)))
+              (should-not (memq 'trades kinds))
+              (should (memq (plist-get (etaf-value ths--state) :chart) kinds)))))))))
+
+(ert-deftest ths-hkus-trades-panel-absent ()
+  "港美详情页与侧栏都不出现成交明细面板；A 股仍有。"
+  (ths-test-with-dashboard
+    (setq ths-data-stocks (cons (ths-hkus-test-hk-stock) (ths-test-stocks)))
+    (ths--set ths--state :selected "00700")
+    (should-not (ths-test-visible "成交记录 / 分时成交"))
+    (should-not (ths-test-visible "东方财富 · 最新记录在上"))
+    (ths--set ths--state :selected "600519")
+    (should (ths-test-visible "成交记录 / 分时成交"))))
+
+(ert-deftest ths-hkus-watchlist-shows-market-label ()
+  "自选列表行带画像市场标签：港股 / 美股 出现在各自的行内，行宽不越界。"
+  (ths-test-with-dashboard
+    (setq ths-data-stocks (append (list (ths-hkus-test-hk-stock) (ths-hkus-test-us-stock))
+                                  (ths-test-stocks)))
+    (ths--publish)
+    ;; 渲染层：标签紧跟代码列，这一字节序列只可能来自自选列表行。
+    (should (ths-test-visible "00700 港股"))
+    (should (ths-test-visible "AAPL 美股"))
+    (should-not (ths-test-visible "00700 美股"))
+    ;; 行构造层：标签不挤掉涨跌幅列，任何一行都不超过面板内容宽度。
+    (dolist (row (list (ths--watchlist-row (ths-hkus-test-hk-stock) "*")
+                       (ths--watchlist-row (ths-hkus-test-us-stock) " ")
+                       (ths--watchlist-row (car (ths-test-stocks)) " ")))
+      (should (<= (string-width row) (- ths--watchlist-width 2)))
+      (should (string-match-p "%" row)))))
+
+(ert-deftest ths-hkus-filter-matches-market-label ()
+  "筛选：查询「港股」「美股」只命中对应市场，A 股标的不被带入。"
+  (ths-test-with-dashboard
+    (setq ths-data-stocks (append (list (ths-hkus-test-hk-stock) (ths-hkus-test-us-stock))
+                                  (ths-test-stocks)))
+    (dolist (case '(("港股" . ("hk00700")) ("美股" . ("usAAPL"))))
+      (should (equal (cdr case)
+                     (mapcar (lambda (stock) (plist-get stock :symbol))
+                             (ths-data-filter (car case) nil nil nil)))))
+    ;; A 股与空查询零回归：代码仍可命中，空查询返回全部。
+    (should (equal '("sh600519")
+                   (mapcar (lambda (stock) (plist-get stock :symbol))
+                           (ths-data-filter "600519" nil nil nil))))
+    (should (= (length ths-data-stocks) (length (ths-data-filter "" nil nil nil))))))
+
+(ert-deftest ths-hkus-book-title-without-selection ()
+  "无选中标的时盘口标题退回 A 股默认，港美按画像出「盘口 / 股」。"
+  (should (equal "五档盘口 / 手" (ths--book-title nil)))
+  (should (equal "盘口 / 股" (ths--book-title (ths-hkus-test-hk-stock))))
+  (should (equal "盘口 / 股" (ths--book-title (ths-hkus-test-us-stock))))
+  (should (equal "五档盘口 / 手" (ths--book-title (list :symbol "sh600519")))))
+
+(ert-deftest ths-hkus-index-bar-8-entries ()
+  "指数条含 8 条：136 列全部出现，44 列截断尾部且不抛错。"
+  (ths-test-with-dashboard
+    (setq ths-data-indices (mapcar #'ths-data-placeholder ths-data-index-symbols))
+    (let* ((runtime (etaf-runtime-for-buffer buffer))
+           (names '("上证指数" "深证成指" "创业板指" "恒生指数" "国企指数"
+                    "道指" "纳指" "标普500")))
+      (etaf-runtime-refit runtime 136 40)
+      (dolist (name names) (should (ths-test-visible name)))
+      (etaf-runtime-refit runtime 44 24)
+      (should (< (cl-count-if #'ths-test-visible names) 8))
+      (should (ths-test-visible "上证指数")))))
+
 ;;; ths-hkus-tests.el ends here

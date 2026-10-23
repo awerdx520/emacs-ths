@@ -298,8 +298,11 @@
           (progn
             (setq buffer (ths))
             (with-current-buffer buffer
-              (should (= 13 (length calls)))
+              ;; 8 自选股 + 8 指数（任务6 由 3 条扩为 8 条）+ 分时 + 成交明细。
+              (should (= 18 (length calls)))
               (should (member '("sh000001" . quote) calls))
+              (should (member '("hkHSI" . quote) calls))
+              (should (member '("us.IXIC" . quote) calls))
               (should (member '("sz300033" . intraday) calls))
               (should (member '("sz300033" . trades) calls))
               (should (timerp ths--timer))
@@ -308,7 +311,7 @@
               (let ((timer ths--timer))
                 (should (eq buffer (ths)))
                 (should (eq timer ths--timer)))
-              (should (= 13 (length calls)))))
+              (should (= 18 (length calls)))))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
 (ert-deftest ths-remount-does-not-accept-old-session-response ()
