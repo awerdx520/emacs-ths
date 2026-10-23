@@ -1093,7 +1093,9 @@ Returns PREDICATE's last value.  batch 下 `accept-process-output' 会推进计�
 Seven news items, five report periods and three announcements exceed the default
 `ths-ai-news-count' / `ths-ai-financials-periods' / `ths-ai-announcements-count',
 so the trimming assertions have something to trim.  Only the newest
-announcement carries a body (3000 chars) and a page count."
+announcement carries a body (3000 chars) and a page count, and the body rides
+INFO's `:announcement-body' key rather than the headline entry — that is the
+shape `ths-info-collect' produces."
   (list :news (cl-loop for i from 1 to 7
                        collect (list :title (format "新闻标题%d" i)
                                      :time (format "2026-10-2%d 09:00:00" i)
@@ -1108,14 +1110,14 @@ announcement carries a body (3000 chars) and a page count."
         :announcements
         (list (list :title "关于回购股份的公告"
                     :time "2026-10-22"
-                    :art-code "AN2026102201"
-                    :content (make-string 3000 ?公)
-                    :pages 380)
+                    :art-code "AN2026102201")
               (list :title "三季度业绩预告" :time "2026-10-20"
-                    :art-code "AN2026102002"
-                    :content "第二条公告的正文不应发送")
+                    :art-code "AN2026102002")
               (list :title "股东大会决议" :time "2026-10-18"
                     :art-code "AN2026101803"))
+        ;; 正文与公告列表分开：`ths-info-collect' 把正文放在 INFO 的独立键上，
+        ;; 公告条目（命中缓存时是缓存对象）因此永不被原地追加正文键。
+        :announcement-body (list :content (make-string 3000 ?公) :pages 380)
         :macro (list :fx-usdcny 7.12 :fx-hkdcny 0.9102
                      :dollar-index 104.3 :oil 71.5 :gold 2650.0
                      :a50 12800.0 :hsi-future 20500.0
@@ -1158,6 +1160,30 @@ announcement carries a body (3000 chars) and a page count."
       (let ((announcements (plist-get (ths-ai--info-facts (ths-ai-test--info))
                                       :announcements)))
         (should-not (plist-member (car announcements) :content))))))
+
+(ert-deftest ths-ai-info-facts-body-comes-from-its-own-key ()
+  "正文只从 INFO 的 `:announcement-body' 读，公告条目上的 :content 不再参与。
+这是缓存不被污染的契约：条目里没有正文可追加，正文也不可能被追加两次。"
+  (let* ((ths-ai-announcement-body-chars 100)
+         (info (ths-ai-test--info))
+         (items (plist-get info :announcements))
+         (announcements (plist-get (ths-ai--info-facts info) :announcements)))
+    ;; 条目本身干净，正文在独立键上。
+    (dolist (item items)
+      (should-not (plist-member item :content))
+      (should-not (plist-member item :pages)))
+    (should (stringp (plist-get (plist-get info :announcement-body) :content)))
+    ;; 首条事实拿到了正文与页数。
+    (should (stringp (plist-get (car announcements) :content)))
+    (should (= 380 (plist-get (car announcements) :pages)))
+    ;; 即便有人把旧形状（正文挂在条目上）喂进来，也不读它：正文仍来自独立键，
+    ;; 因此取值路径只有一条，缓存对象没法借条目把正文带回来。
+    (let* ((legacy (copy-tree info))
+           (legacy-items (plist-get legacy :announcements)))
+      (setcar legacy-items (append (car legacy-items) (list :content "条目自带的旧正文")))
+      (let ((fact (car (plist-get (ths-ai--info-facts legacy) :announcements))))
+        (should (equal (plist-get (car announcements) :content)
+                       (plist-get fact :content)))))))
 
 (ert-deftest ths-ai-info-facts-omits-disabled ()
   ;; 关闭的因子直接从 facts 里省略（不是 nil 值），提示词才不会渲染该行。

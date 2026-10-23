@@ -291,9 +291,13 @@ zeroed, so the model never reads a fabricated number."
            (or rows nil))
    (or ths-ai-financials-periods 0)))
 
-(defun ths-ai--announcement-facts (items)
+(defun ths-ai--announcement-facts (items &optional body)
   "Return ITEMS as at most `ths-ai-announcements-count' announcement facts.
-Only the newest announcement keeps `:content' and `:pages':
+BODY is the `(:content :pages)' plist `ths-info-collect' carries under INFO's
+`:announcement-body' key; it belongs to the newest headline (`(car ITEMS)'
+art-code), so only the first fact can receive it.  Reading the body from its own
+key — instead of from the announcement entry — is what lets the info layer keep
+`:announcements' a cached, never-rewritten list.
 `ths-ai-announcement-body-chars' bounds the body and 0 sends the headline only.
 No view count is forwarded: no parser produces one
 \(`ths-info--announcements-parse' keeps title, time and art-code), so the old
@@ -305,9 +309,10 @@ No view count is forwarded: no parser produces one
                (let ((fact (list :title (ths-ai--field (plist-get item :title)
                                                        ths-ai--info-text-width)
                                  :time (ths-ai--field (plist-get item :time)))))
-                 (when (and (= index 0) (> body-chars 0))
-                   (let ((content (ths-ai--field (plist-get item :content) body-chars))
-                         (pages (plist-get item :pages)))
+                 (when (and (= index 0) (> body-chars 0) body)
+                   (let ((content (ths-ai--field (plist-get body :content)
+                                                 body-chars))
+                         (pages (plist-get body :pages)))
                      (when content (setq fact (plist-put fact :content content)))
                      (when (numberp pages)
                        (setq fact (plist-put fact :pages pages)))))
@@ -341,7 +346,9 @@ at all, while a present-but-nil key would print a bare `--' row.
 
 Counts and periods are trimmed by `ths-ai-news-count',
 `ths-ai-announcements-count' and `ths-ai-financials-periods'; the newest
-announcement body is cut to `ths-ai-announcement-body-chars' (0 drops it).
+announcement body — INFO's own `:announcement-body' key, which the info layer
+never writes onto the cached headline list — is cut to
+`ths-ai-announcement-body-chars' (0 drops it).
 Every string goes through `ths-ai--field', which folds line breaks, breaks fence
 markers and cuts to the factor's own width — external text is hostile by
 definition.  Numbers keep their type so the prompt renders two decimals.
@@ -360,7 +367,8 @@ the macro factor is off."
         (when financials (setq facts (plist-put facts :financials financials)))))
     (when ths-ai-announcements-enabled
       (let ((announcements (ths-ai--announcement-facts
-                            (plist-get info :announcements))))
+                            (plist-get info :announcements)
+                            (plist-get info :announcement-body))))
         (when announcements
           (setq facts (plist-put facts :announcements announcements)))))
     (when ths-ai-macro-enabled

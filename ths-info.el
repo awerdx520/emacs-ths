@@ -655,13 +655,17 @@ STOCK is a stock plist (or a market-qualified symbol string); CALLBACK
 receives (INFO ERRORS) where INFO is a plist with `:news' (headline
 plists), `:announcements' (headline plists), `:financials' (report plists),
 `:industry' (`:name' plus `:change'), `:macro' (readings plist) and
-`:turnover' (yuan).  When the newest announcement body came back it is
-stored on the first element of `:announcements' as `:content' and `:pages',
-so INFO never grows a second announcement key.
+`:turnover' (yuan).  The newest announcement body arrives as its own
+`:announcement-body' key, a `(:content :pages)' plist mirroring
+`ths-info--announcement-body-parse': `:announcements' is cached exactly as
+parsed and may be handed out verbatim, so the body is never written onto its
+elements.
 
 ERRORS is an alist of keyword to message using the same keywords as INFO, plus
-`:announcement-body' for the body request: a body that fails does not mark the
-whole `:announcements' factor as failed, because the headlines did arrive.
+`:announcement-body' for the body request — the same keyword names the body
+value in INFO and the body failure in ERRORS, because the two never travel
+together: a body that fails does not mark the whole `:announcements' factor as
+failed, since the headlines did arrive.
 Requests run concurrently (at most eight: news, announcement list and body,
 reports, industry name and change, macro panel and turnover); a failed or
 empty source only drops its own factor.  `ths-info-timeout' bounds the whole
@@ -741,13 +745,12 @@ them for lack of a subject is not a failure and records nothing in ERRORS."
               :announcement-body (ths-info--announcement-body-url art-code)
               #'ths-info--announcement-body-parse
               (lambda (body)
-                (let ((items (plist-get info :announcements)))
-                  (when (and (listp items) items)
-                    ;; 先拷贝再改写：ITEMS 可能直接来自 `ths-info--cache'，
-                    ;; `setcar' 原地改会把缓存里的条目一起污染。
-                    (setcar items (append (copy-sequence (car items))
-                                          (list :content (plist-get body :content)
-                                                :pages (plist-get body :pages)))))))
+                ;; 正文挂在 INFO 自己的键上，不写进公告条目：`info' 里的
+                ;; `:announcements' 命中缓存时就是 `ths-info--cache' 里那个列表
+                ;; 对象，任何原地改写（`setcar' 追加键）都会污染缓存，下一次命中
+                ;; 在旧条目上再追加一遍，`:content'/`:pages' 越积越多。独立键
+                ;; 只读不写列表，缓存对象因此始终是解析出来的原样。
+                (record :announcement-body body))
               nil 'utf-8 (list :announcement-body art-code))))
          (fetch-industry-change (name)
            (when (and name (not done))

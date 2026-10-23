@@ -630,6 +630,50 @@ TTL 只决定是否复用，从不删除；没有清扫时缓存表会随会话�
           (should (ths-info-test--await (lambda () (> second 0))))
           (should (= 1 second)))))))
 
+(ert-deftest ths-info-collect-body-keeps-cache-object-clean ()
+  "正文走 INFO 独立键 `:announcement-body'，命中的公告列表缓存对象永不被改写。
+往缓存列表的条目前追加正文键（`setcar'）会让第二次命中在旧条目上再追加一遍，
+`:content'/`:pages' 因此重复累积；独立键只读列表，缓存条目保持解析出来的原样。"
+  (ths-info-test--with-http nil
+    (ths-info-test--with-switches nil
+      (let ((ths-info-cache-seconds 3600)
+            (first nil)
+            (second nil)
+            (calls 0))
+        (clrhash ths-info--cache)
+        (unwind-protect
+            (progn
+              (ths-info-collect ths-info-test--stock
+                                (lambda (info _e) (setq first info calls (1+ calls))))
+              (should (ths-info-test--await (lambda () (> calls 0))))
+              (setq calls 0)
+              (ths-info-collect ths-info-test--stock
+                                (lambda (info _e) (setq second info calls (1+ calls))))
+              (should (ths-info-test--await (lambda () (> calls 0))))
+              ;; 第二次全走缓存：公告列表与正文都不再发起请求。
+              (should (= 1 (ths-info-test--call-count 'ann-list)))
+              (should (= 1 (ths-info-test--call-count 'ann-body)))
+              ;; 两次的 INFO 结构相同：正文只出现在独立键上，条目里没有正文键。
+              (dolist (info (list first second))
+                (should (stringp (plist-get (plist-get info :announcement-body) :content)))
+                (should (= 3 (length (plist-get info :announcements))))
+                (dolist (item (plist-get info :announcements))
+                  (should-not (plist-member item :content))
+                  (should-not (plist-member item :pages))))
+              ;; 两次拿到的是同一个缓存对象，且它仍是干净的三条。
+              (should (eq (plist-get first :announcements)
+                          (plist-get second :announcements)))
+              (let ((cached (ths-info--cache-get (list :announcements "sh600519"))))
+                (should (consp cached))
+                (should (= 3 (length cached)))
+                (dolist (item cached)
+                  (should-not (plist-member item :content))
+                  (should-not (plist-member item :pages))))
+              ;; 缓存里的公告列表等价于解析结果：没有键累积。
+              (should (equal (ths-info--announcements-parse ths-info-test-ann-list-a)
+                             (plist-get second :announcements))))
+          (clrhash ths-info--cache))))))
+
 (ert-deftest ths-info-collect-degrades-single-source ()
   "单源失败只把该因子置 nil 并写入 ERRORS，其余因子照常返回。"
   (ths-info-test--with-http '((news . :fail))
