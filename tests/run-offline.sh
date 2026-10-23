@@ -58,6 +58,7 @@ tests=(
     tests/ths-tests.el
     tests/ths-layout-tests.el
     tests/ths-ai-tests.el
+    tests/ths-info-tests.el
     tests/ths-hkus-tests.el
 )
 

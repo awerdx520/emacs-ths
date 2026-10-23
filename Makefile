@@ -30,7 +30,7 @@ STRAIGHT_BUILD ?=
 SOURCES = ths.el ths-ai.el ths-chart.el ths-data.el ths-diagnose.el ths-search.el ths-theme.el ths-watchlist.el
 
 # 离线 ERT 文件，顺序固定：data → otc → ranking → fund-ranking → search →
-# trades → volume → watchlist → tests → layout → ai → hkus。
+# trades → volume → watchlist → tests → layout → ai → info → hkus。
 # 不含 tests/ths-gui-tests.el（需图形）与 tests/ths-live-check.el（需网络）。
 TESTS = tests/ths-data-tests.el \
         tests/ths-otc-tests.el \
@@ -43,6 +43,7 @@ TESTS = tests/ths-data-tests.el \
         tests/ths-tests.el \
         tests/ths-layout-tests.el \
         tests/ths-ai-tests.el \
+        tests/ths-info-tests.el \
         tests/ths-hkus-tests.el
 
 # 已知基线失败：当前为空。那 3 条曾被排除的用例已由 LOCALE_ENV=C.UTF-8 转绿。
