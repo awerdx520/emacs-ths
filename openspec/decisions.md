@@ -73,3 +73,15 @@
 - 决策：`Makefile` 的 `compile` 目标改为 `-l scripts/compile-strict.el -- $(SOURCES)`。脚本逐个 `byte-compile-file`，按返回值判失败、复核 `.elc` 是否真的生成，任一 warning／error 即 `kill-emacs 1`；`.elc` 经 `byte-compile-dest-file-function` 重定向到临时目录，`unwind-protect` 保证成功、失败、异常三条路径都清理。源文件清单由 Makefile 传参（`SOURCES`，8 个文件），脚本缺省清单与之一致，避免两份清单漂移。
 - 理由：`-f batch-byte-compile` 是**命令**，返回值被丢弃；`byte-compile-error-on-warn` 为 t 时遇 warning 只让 `byte-compile-file` 返回 `nil` 且不写 `.elc`，而 `emacs --batch` 的退出码恒为 0（实测 GNU Emacs 31.1）。两道机制叠加使 `make compile` 长期假绿，门禁只能由脚本按返回值判失败并显式非零退出。
 - 备选与放弃原因：`-f batch-byte-compile` 之后用 `--eval` 猜退出码（拿不到逐文件返回值，batch 下失败已被吞，无处可判）；把编译循环内联成一行 `--eval`（不可维护，报错没有文件名清单）；保留漏判、改在 CI 里 grep `*Compile-Log*` 兜底（日志格式随 Emacs 版本变化，本地 `make compile` 仍假绿）。
+
+## 2026-10-23 AI 分析的外部信息由仓库自抓而非模型联网检索
+
+- 决策：新闻、公告、财报、行业、宏观/外围五类外部信息全部由 `ths-info.el` 直连公开接口抓取并解析，再把结构化事实放进提示词；不启用 gptel tools 或 provider 侧 web search 让模型自行检索。
+- 理由：① 结果可复现——自抓能用固定响应夹具做离线 ERT，模型检索到了什么无法断言，测试无从下手；② 数据可缓存——`ths-info-cache-seconds`（默认 120 秒）让连按 `A` 不重复抓网络；③ 部分后端不支持联网工具，且现有传输层显式绑定 `gptel-use-tools=nil`（ADR 0001 的 `gptel-request` 调用面），启用等于改既有契约；④ 失败语义由本项目定义（单源失败只置 nil，分析照发），交给模型则失败形态不可控。2026-10-23 两轮探测确认五类源均有可用公开端点（东财搜索 JSONP / 东财公告 / 东财 `datacenter` 财报 / 新浪行业 + 同花顺行业列表 / 腾讯与新浪宏观），自抓可行。
+- 备选与放弃原因：模型联网检索（不可复现、无法离线测试、部分后端不支持、需改 `gptel-use-tools` 契约）；引入付费数据源（成本与账号依赖，违背「无需 API Key」定位，且港美行业/公告在公开源里已部分可得）；只做新闻不做财报公告（用户明确要求财报与公告解读）。
+
+## 2026-10-23 新增 ths-info.el 作为外部信息模块边界
+
+- 决策：外部信息另立 `ths-info.el`（五类抓取与解析 + 统一 HTTP 封装 + 异步并发收集 `ths-info-collect` + 短 TTL 内存缓存），`ths-ai.el` 只负责把信息面转成事实 plist、扩契约、渲染小节与纳入签名；`ths-data.el` 与 `ths.el` 不改。
+- 理由：两个模块的生命周期与失败语义不同——行情是秒级刷新 + 多 provider 回退链（`ths-data--providers`），信息面是分钟级缓存 + 单源降级（失败只置 nil，无第二源）；HTTP 口径也不同（信息面需要源级 Referer 策略与 2 MiB 响应上限，`ths-data--http` 的 `--referer` 按 provider 写死且无 `--max-filesize`）。不拆的代价是 `ths-data.el` 继续膨胀（当前 1402 行，`ths-ai.el` 1586 行），且信息面的编码/剥壳差异会渗进行情解析路径。
+- 备选与放弃原因：并入 `ths-data.el`（生命周期与失败语义被强行统一，行情回退链要为信息源引入无意义的 provider 概念，单测边界也会跨模块）；并入 `ths-ai.el`（该文件已是提示词 + 传输 + 解析 + 渲染 + 缓存五职责，再加五类抓取会让单文件职责彻底失焦，且抓取逻辑与 AI 传输无耦合）；在 `ths-data.el` 内加一个 `info` kind 走既有 `ths-data--http`（`--referer` 与 `--max-filesize` 两处口径都不够用，等于在旧抽象里打补丁）。
