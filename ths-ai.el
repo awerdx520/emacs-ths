@@ -32,6 +32,7 @@
 (require 'subr-x)
 (require 'json)
 (require 'ths-data)
+(require 'ths-theme)
 
 ;; The report buffer disables the confirmation prompt of the two link types that
 ;; execute code.  Both variables are defined by `ol.el', which is only loaded
@@ -39,6 +40,13 @@
 ;; warning about a free variable.
 (defvar org-confirm-elisp-link-function)
 (defvar org-confirm-shell-link-function)
+;; `evil-normal-state-local-map' 只在 evil 初始化后才有值，本模块不依赖 evil。
+;; 报告 buffer 的 `q' 需要写进这张 buffer-local state map（evil 的 state map 优先级
+;; 高于 buffer local map），而读取它（`copy-keymap'）构成一次裸变量引用：在
+;; `lexical-binding: t' 与 `byte-compile-error-on-warn t' 下必须在此声明，否则严格编译
+;; 报 "reference to free variable" 并失败。不带初始值只声明特殊变量，变量仍是 unbound，
+;; 因此 `ths-ai--bind-report-keys' 里的 `boundp' 判断依然按「有没有 evil」分流。
+(defvar evil-normal-state-local-map)
 
 (defgroup ths-ai nil "AI analysis for the THS dashboard." :group 'ths)
 
@@ -748,6 +756,9 @@ as the last line of defence."
 (defvar ths--state)
 (defvar ths--session)
 (declare-function gptel-request "gptel" (prompt &rest args))
+;; evil 是可选依赖：buffer-local state map 尚未初始化时优先走 evil 自己的入口，
+;; 它会建好并登记那张 map（见 `ths-ai--bind-report-keys'）。
+(declare-function evil-local-set-key "evil" (state key def))
 (declare-function url-retrieve "url" (url callback &optional cbargs silent inhibit-cookies))
 (declare-function auth-source-pick-first-password "auth-source" (&rest spec))
 (declare-function etaf-value "etaf" (ref))
@@ -1104,6 +1115,108 @@ an old answer overwrite the fresh one.")
 (defconst ths-ai--report-buffer-name "*THS 分析*"
   "Buffer holding the rendered THS-AI report.")
 
+;;;; 报告 buffer 的配色与退出键
+
+(defun ths-ai--report-face-remapping ()
+  "返回报告 buffer 的 buffer-local `face-remapping-alist'。
+报告 buffer 是普通 `org-mode' buffer，默认吃 Emacs 全局主题，而看板是 ETAF 自绘、
+只覆盖 buffer 区 default face，两块界面的配色来源不同。这里按 role 取 `ths-theme'
+的调色板覆盖 default 与报告里实际出现的 org face，让两块界面取同一套颜色。
+
+role 一律经 `ths-theme-color' 取值，而不是在这里写死明暗两套色值：切主题后重新
+调用本函数就得到另一套颜色，函数本身不必知道当前是 dark 还是 light。"
+  (let ((color (lambda (role) (ths-theme-color role))))
+    `((default :background ,(funcall color 'background)
+               :foreground ,(funcall color 'foreground))
+      (org-document-title :foreground ,(funcall color 'line) :weight bold :height 1.4)
+      (org-document-info :foreground ,(funcall color 'secondary))
+      (org-document-info-keyword :foreground ,(funcall color 'muted))
+      (org-meta-line :foreground ,(funcall color 'muted))
+      (org-level-1 :foreground ,(funcall color 'line) :weight bold :height 1.3)
+      (org-level-2 :foreground ,(funcall color 'warning) :weight bold :height 1.15)
+      (org-level-3 :foreground ,(funcall color 'secondary) :weight bold)
+      (org-level-4 :foreground ,(funcall color 'down) :weight bold)
+      (org-level-5 :foreground ,(funcall color 'neutral))
+      (org-level-6 :foreground ,(funcall color 'neutral))
+      (org-level-7 :foreground ,(funcall color 'neutral))
+      (org-level-8 :foreground ,(funcall color 'neutral))
+      (org-link :foreground ,(funcall color 'area) :underline t)
+      (org-code :foreground ,(funcall color 'point) :background ,(funcall color 'alternate))
+      (org-verbatim :foreground ,(funcall color 'point) :background ,(funcall color 'alternate))
+      (org-block :background ,(funcall color 'panel) :foreground ,(funcall color 'foreground))
+      (org-block-begin-line :background ,(funcall color 'panel) :foreground ,(funcall color 'muted))
+      (org-block-end-line :background ,(funcall color 'panel) :foreground ,(funcall color 'muted))
+      (org-table :background ,(funcall color 'panel) :foreground ,(funcall color 'neutral))
+      (org-quote :foreground ,(funcall color 'secondary) :slant italic)
+      (org-hide :foreground ,(funcall color 'background)))))
+
+(defun ths-ai--apply-report-theme (&optional buffer)
+  "把 THS 调色板应用到 BUFFER（须为存活 buffer，默认当前 buffer）的 buffer-local face remap。
+每次 present 都调用一次，而不是只在首次创建 buffer 时设置：`face-remapping-alist'
+可能被外来代码清掉，而本函数幂等，重复应用没有副作用。
+
+`force-window-update' 不是可选的：只赋 `face-remapping-alist' 不会把窗口标记为需要
+重绘，报告正文又没有变化，Emacs 就不会重画，结果是报告继续显示旧色——变量自己的
+文档也提示需要 redraw。以当前 buffer 为参数只重绘显示该 buffer 的窗口，比
+`redraw-display' 更克制。"
+  (with-current-buffer (or buffer (current-buffer))
+    (setq-local face-remapping-alist (ths-ai--report-face-remapping))
+    (force-window-update (current-buffer))))
+
+(defun ths-ai--refresh-report-theme ()
+  "主题变更后重新给存活的报告 buffer 上色。
+`face-remapping-alist' 是赋值那一刻算好的快照，`T' 切 `ths-theme' 不会自动重算，
+必须挂在 `ths-theme-change-hook' 上主动刷新，否则报告残留上一套主题的颜色。"
+  (let ((buffer (get-buffer ths-ai--report-buffer-name)))
+    (when (buffer-live-p buffer)
+      (ths-ai--apply-report-theme buffer))))
+
+(defun ths-ai--bind-report-keys ()
+  "给报告 buffer 绑定退出键，含 evil normal state 下的 `q'。
+报告 buffer 的 `current-local-map' 就是所有 org buffer 共享的 `org-mode-map'，直接
+`local-set-key' 会把覆盖写进用户的每一个 org buffer（实测：另一个 org buffer 立刻
+看到同一个绑定），因此这里以当前 local map 为父键表另建一张 buffer 局部键表再
+`use-local-map'：`C-c C-q' 只在报告 buffer 内遮蔽 `org-set-tags-command'。
+
+`C-c C-q' 覆盖 `org-set-tags-command' 是刻意为之：报告 buffer 只读，改 tag 在
+这里没有意义，而按 `C-c C-q' 退出与看板的手感一致。
+
+键表构建是幂等的：重复 present 时 current local map 已经是本函数建的那张，`q' 也已
+指向退出命令，就不再套一层新键表，键表链不会随 present 次数增长。"
+  (let ((map (current-local-map)))
+    (unless (eq (lookup-key map (kbd "q")) #'ths-ai-quit-report)
+      (let ((bound (make-sparse-keymap)))
+        (set-keymap-parent bound map)
+        (define-key bound (kbd "C-c C-q") #'ths-ai-quit-report)
+        (define-key bound (kbd "q") #'ths-ai-quit-report)
+        (use-local-map bound))))
+  (when (boundp 'evil-normal-state-local-map)
+    ;; evil 的 state map 经 `emulation-mode-map-alists' 生效，优先级高于 buffer local
+    ;; map，而 `q' 在 evil 是宏录制键，只写 local map 会被吞掉。
+    ;;
+    ;; 已有 buffer-local state map 时必须**就地**加键，不能 `copy-keymap' 出一个新
+    ;; map 再 `setq-local'：evil 在把这张 map 登记进 keymap alist 时记的是对象本身，
+    ;; 换掉对象之后 `q' 仍然命中全局 `evil-normal-state-map'（Evil 1.15 实测：
+    ;; copy-keymap + setq-local 之后 `key-binding' 仍返回 `evil-record-macro'，改为
+    ;; 就地 `define-key' 立刻返回本命令）。就地加键同时天然满足 I-EVIL——既有绑定
+    ;; （evil-org 注入的 org 导航键）一个都不会丢。
+    (cond
+     ((keymapp evil-normal-state-local-map)
+      (define-key evil-normal-state-local-map (kbd "q") #'ths-ai-quit-report))
+     ;; 本 buffer 的 state map 还没建出来（evil 尚未 normalize）：交给 evil 自己的
+     ;; 入口，它负责建 map 并登记，避免我们自己造一个游离对象。
+     ((fboundp 'evil-local-set-key)
+      (evil-local-set-key 'normal (kbd "q") #'ths-ai-quit-report))
+     ;; 此分支只在 `boundp' 为真而 evil 入口缺失时兜底（真实 evil 环境下不可达，主要
+     ;; 服务测试）；它用 `setq-local' 造的 map 不会被 evil 登记，因此不具备实际按键
+     ;; 生效能力。
+     (t (setq-local evil-normal-state-local-map
+                    (let ((map (make-sparse-keymap)))
+                      (define-key map (kbd "q") #'ths-ai-quit-report)
+                      map))))))
+
+(add-hook 'ths-theme-change-hook #'ths-ai--refresh-report-theme)
+
 (defun ths-ai--results-table ()
   "Return this buffer's result table, creating it on first use."
   (or ths-ai--results
@@ -1432,8 +1545,13 @@ report buffer."
       ;; `https' links are a different variable and stay clickable.
       (setq-local org-confirm-elisp-link-function (lambda (&rest _) nil))
       (setq-local org-confirm-shell-link-function (lambda (&rest _) nil))
+      ;; 配色必须在 `org-mode' 之后、且不受上面的模式判断约束：每次 present 都上色，
+      ;; 这里幂等，外来代码清掉 remap 时也能自愈。
+      (ths-ai--apply-report-theme)
+      ;; 报告是窄 side window，长行折行显示，否则只能看到行首。
+      (setq-local truncate-lines nil)
       (read-only-mode 1)
-      (local-set-key (kbd "q") #'ths-ai-quit-report))
+      (ths-ai--bind-report-keys))
     (let ((window (display-buffer-in-side-window
                    buffer
                    `((side . right)

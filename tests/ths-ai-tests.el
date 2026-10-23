@@ -924,4 +924,140 @@ Returns PREDICATE's last value.  batch 下 `accept-process-output' 会推进计�
       (remhash 'stock (ths-ai--results-table))
       (should-not (ths-ai--current-entry 'stock b)))))
 
+;;;; 第 3 轮：报告 buffer 配色（P1）与退出键（P2）
+
+;; evil 是用户的配置依赖，测试里不得 `require'。这里用 `defvar' 制造 `boundp'，
+;; 让 `ths-ai--bind-report-keys' 的 evil 分支在 batch 测试中真正被执行：不带初始值的
+;; `defvar' 只声明特殊变量、变量仍然是 unbound，`boundp' 返回 nil，故显式给 nil。
+;; 用户的 evil 已经绑定该变量时 `defvar' 不会覆盖既有值。
+(defvar evil-normal-state-local-map nil
+  "Buffer-local evil normal state keymap, declared for the THS-AI tests.")
+
+(defun ths-ai-test--present-report ()
+  "Present a THS-AI report from a throwaway buffer and return its buffer.
+报告正文取自当前 buffer 的结果表；临时 buffer 里没有任何缓存条目，渲染出的是一份
+合法的空报告——本组用例只关心报告 buffer 的 face remap、`truncate-lines' 与键绑定。"
+  (with-temp-buffer
+    (ths-ai--present)))
+
+(defun ths-ai-test--report-remap (face)
+  "Return the remapping spec of FACE in the current buffer, or nil."
+  (cdr (assq face face-remapping-alist)))
+
+(ert-deftest ths-ai-report-theme-remaps-default-and-headings ()
+  ;; P1：报告 buffer 是普通 `org-mode' buffer，默认吃 Emacs 全局主题；必须用
+  ;; buffer-local `face-remapping-alist' 覆盖成 THS 调色板，才能与 ETAF 看板一致。
+  (unwind-protect
+      (let ((buffer (ths-ai-test--present-report)))
+        (with-current-buffer buffer
+          (let ((default (ths-ai-test--report-remap 'default)))
+            (should default)
+            (should (equal (ths-theme-color 'background)
+                           (plist-get default :background)))
+            (should (equal (ths-theme-color 'foreground)
+                           (plist-get default :foreground))))
+          ;; 标题、行内代码与表格是报告里最显眼的三类 org face。
+          (dolist (face '(org-level-1 org-code org-table))
+            (should (ths-ai-test--report-remap face)))
+          ;; 窄 side window 里正文必须折行，否则长行被横向裁掉。
+          (should-not truncate-lines)))
+    (ths-ai-test--cleanup-report)))
+
+(ert-deftest ths-ai-report-theme-refreshes-on-theme-change ()
+  ;; P1：`face-remapping-alist' 是显式赋值的快照，`T' 切主题不会自动重算，
+  ;; 必须由 `ths-theme-change-hook' 主动刷新报告 buffer，否则残留旧色。
+  (unwind-protect
+      (let* ((buffer (ths-ai-test--present-report))
+             (dark (plist-get (with-current-buffer buffer
+                                (ths-ai-test--report-remap 'default))
+                              :background)))
+        (should (equal (ths-theme-color 'background) dark))
+        (customize-set-variable 'ths-theme 'light)
+        (with-current-buffer buffer
+          (should (eq 'light ths-theme))
+          (let ((light (plist-get (ths-ai-test--report-remap 'default) :background)))
+            (should (equal (ths-theme-color 'background) light))
+            ;; 明暗两套背景必须真的不同，否则本条断言等于自证。
+            (should-not (equal dark light)))))
+    (customize-set-variable 'ths-theme 'dark)
+    (ths-ai-test--cleanup-report)))
+
+(ert-deftest ths-ai-report-binds-quit-keys ()
+  ;; P2：`C-c C-q' 与 `q' 都必须能关掉报告窗口；`q' 同时覆盖非 evil 环境。
+  (unwind-protect
+      (let ((buffer (ths-ai-test--present-report)))
+        (with-current-buffer buffer
+          (should (eq #'ths-ai-quit-report (key-binding (kbd "C-c C-q"))))
+          (should (eq #'ths-ai-quit-report (key-binding (kbd "q")))))
+        ;; 不变量：报告 buffer 的键绑定不得污染用户的其它 org buffer。
+        ;; `local-set-key' 在 org buffer 里写的正是共享的 `org-mode-map'（实测
+        ;; `current-local-map' 就是 `org-mode-map'），所以必须走 buffer 局部键表。
+        (with-temp-buffer
+          (org-mode)
+          (should-not (eq #'ths-ai-quit-report (key-binding (kbd "C-c C-q"))))))
+    (ths-ai-test--cleanup-report)))
+
+(ert-deftest ths-ai-report-binds-q-in-evil-normal-state ()
+  ;; P2：`q' 在 evil normal state 是 `evil-record-macro'，经 state map 的优先级高于
+  ;; buffer local map，只写 local map 会被吞掉；必须同时写 buffer-local state map。
+  ;; 且只能「就地」加键：evil 把 map 对象本身登记进 keymap alist，换成新对象后绑定
+  ;; 不生效（Evil 1.15 实测），所以重复 present 必须复用同一个 map 对象。
+  (unwind-protect
+      (let* ((buffer (ths-ai-test--present-report))
+             (map (with-current-buffer buffer evil-normal-state-local-map)))
+        (with-current-buffer buffer
+          (should (keymapp map))
+          (should (eq #'ths-ai-quit-report (lookup-key map (kbd "q")))))
+        (setq buffer (ths-ai-test--present-report))
+        (with-current-buffer buffer
+          (should (eq map evil-normal-state-local-map))
+          (should (eq #'ths-ai-quit-report
+                      (lookup-key evil-normal-state-local-map (kbd "q"))))))
+    (ths-ai-test--cleanup-report)))
+
+(ert-deftest ths-ai-report-evil-local-map-keeps-existing-keys ()
+  ;; 不变量 I-EVIL：evil 分支只能在既有 buffer-local state map 上加键，不得整体替换，
+  ;; 否则 evil-org 等注入的 local 绑定（org 导航键）全部丢失。
+  ;; 预置必须在报告 buffer 已经进入 `org-mode' 之后：`org-mode' 走
+  ;; `kill-all-local-variables'，此前设置的 buffer-local 值会被一并清掉（与本条不变量
+  ;; 无关的机制）。故先 present 一次建出 buffer，再模拟 evil 注入 local 键，然后重复
+  ;; present（真实使用中每按一次 A 都会重新 present）。
+  (unwind-protect
+      (let ((buffer (ths-ai-test--present-report)))
+        (with-current-buffer buffer
+          ;; 模拟 evil-org 注入的 buffer-local 导航键。
+          (setq-local evil-normal-state-local-map
+                      (let ((map (make-sparse-keymap)))
+                        (define-key map (kbd "j") #'ignore)
+                        map)))
+        (let ((seeded (with-current-buffer buffer evil-normal-state-local-map)))
+          (setq buffer (ths-ai-test--present-report))
+          (with-current-buffer buffer
+            ;; 既有键保留，新键加上，且 map 对象没有被换掉。
+            (should (eq seeded evil-normal-state-local-map))
+            (should (eq #'ignore (lookup-key evil-normal-state-local-map (kbd "j"))))
+            (should (eq #'ths-ai-quit-report
+                        (lookup-key evil-normal-state-local-map (kbd "q")))))))
+    (ths-ai-test--cleanup-report)))
+
+(ert-deftest ths-ai-report-theme-hook-safe-without-buffer ()
+  ;; 回归锁定：`T' 切主题会跑 `ths-theme-change-hook'，而报告 buffer 可能根本没打开
+  ;; （用户从未按过 `A'，或报告已经关掉）。刷新回调此时必须静默跳过，不能因为
+  ;; `get-buffer' 返回 nil 就抛错——那会让 `customize-set-variable' 整体失败，
+  ;; 用户看到的是「主题切不动」，而不是一条无害的空操作。
+  (unwind-protect
+      (progn
+        ;; 前提：起点确实没有报告 buffer，否则本条用例测的就不是「无 buffer」。
+        (ths-ai-test--cleanup-report)
+        (should-not (get-buffer ths-ai--report-buffer-name))
+        (should (memq #'ths-ai--refresh-report-theme ths-theme-change-hook))
+        ;; 断言主体就是不抛错本身：hook 在无报告 buffer 时是空操作。
+        (customize-set-variable 'ths-theme 'light)
+        (should (eq 'light ths-theme))
+        ;; 刷新回调不得顺手造出一个报告 buffer。
+        (should-not (get-buffer ths-ai--report-buffer-name)))
+    ;; 无论断言是否失败都切回 dark，并确保不残留报告 buffer。
+    (customize-set-variable 'ths-theme 'dark)
+    (ths-ai-test--cleanup-report)))
+
 ;;; ths-ai-tests.el ends here

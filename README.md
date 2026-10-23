@@ -116,6 +116,8 @@ AI 分析是本看板的可选能力，不安装、不配置时按 `A` 只会提
 
 **展示。** 详情面板在图表下方、报价来源行上方显示一行摘要（评级 · 置信度 · 观察位，按面板宽度截断）。完整报告（org 模式、只读）写入 `*THS 分析*` 缓冲区，以右侧侧边窗口弹出并取得焦点；按 `q` 关闭窗口后看板恢复原宽度并重新布局。报告不会自动写入磁盘。
 
+**配色与退出。** 报告 buffer 的配色由 `ths-theme` 驱动，与看板取同一套调色板（背景、前景、标题、代码块、表格与 link），两块界面明暗一致；按 `T` 切换主题后报告 buffer 同步刷新，不需要重新生成。关闭报告用 `q` 或 `C-c C-q`，evil normal state 下同样生效；键绑定只写进报告 buffer 自己的键表，不会改动其它 org buffer 的 `C-c C-q`（`org-set-tags-command`）。
+
 **报告安全。** 模型返回的文本按纯文本对待：报告中来自模型文本的 `elisp:` / `shell:` / `file:` 等危险链接会被改写为普通文本（连括号与裸写的 plain link 都算），同时报告 buffer 内禁用 `elisp` / `shell` 两类链接的确认执行；`https` 链接保留可用。`#+` 开头的指令行会被转义，因此模型无法在报告里注入 Org 关键字。
 
 **两种后端（二选一，默认优先 gptel）。**
@@ -126,6 +128,8 @@ AI 分析是本看板的可选能力，不安装、不配置时按 `A` 只会提
 | 内置 OpenAI 兼容 HTTP | 设置 `ths-ai-http-url` 与 `ths-ai-http-model`，并提供密钥 | 密钥从 `ths-ai-http-key-env` 指定的环境变量读取，未命中时回落到 `ths-ai-http-key-auth-source` |
 
 `ths-ai-provider` 默认 `auto`：有可用的 gptel 就用 gptel，否则回落到 HTTP 通道。HTTP 通道的密钥只从环境变量（默认 `OPENAI_API_KEY`）或 `auth-source` 读取，**不写入任何配置文件**，也不会出现在报告、日志或命令行参数里，请求期间会关闭 `http` 类 URL 调试输出（当 `url-debug` 为 `t` 或整数时等于全部关闭）。
+
+**代理环境。** 若 Emacs 通过 HTTP 代理访问网络，DeepSeek 的请求由 gptel backend 自行直连：该 backend 注册时带 `:curl-args '("--noproxy" "api.deepseek.com")`，其 curl 命令行因此带 `--noproxy api.deepseek.com`。原因：gptel 用 curl `-D-` 时把 stdout 首行当作响应状态行，而代理 CONNECT 的应答 `HTTP/1.1 200 Connection established` 会被当成响应首行，请求因此被误判失败。代理排除只作用于该 backend 的 curl 子进程，不改动 Emacs 全局 `process-environment`。
 
 内置 HTTP 通道**仅支持 `https://` 端点**，非 HTTPS 端点会被直接拒绝；证书校验失败即报错，3xx 重定向一律拒绝（不跟随，避免带同一把密钥二次请求别的 host），请求不携带 cookie；响应体**解析前**按字节上限 1 MiB，超限丢弃，下载阶段不设硬上限；gptel 通道的传输与校验由 gptel 自身决定。
 
