@@ -17,6 +17,7 @@
 (require 'ths-search)
 (require 'ths-chart)
 (require 'ths-theme)
+(require 'ths-ai)
 
 (defcustom ths-buffer-name "*同花顺*"
   "Name of the market dashboard buffer." :type 'string :group 'ths)
@@ -66,7 +67,13 @@
   (setq ths--timer nil)
   (when (hash-table-p ths--requests)
     (maphash (lambda (_ cancel) (when (functionp cancel) (funcall cancel))) ths--requests)
-    (clrhash ths--requests)))
+    (clrhash ths--requests))
+  ;; AI 请求与结果按 buffer 缓存，随看板一起失效；报告 buffer 不 kill（用户可能仍在读）。
+  (let ((table (ths-ai--requests-table)))
+    (maphash (lambda (_ cancel) (when (functionp cancel) (ignore-errors (funcall cancel)))) table)
+    (clrhash table))
+  (when (hash-table-p ths-ai--results) (clrhash ths-ai--results))
+  (setq ths-ai--dashboard-buffer nil))
 
 (defun ths--publish ()
   "Notify the reactive view that its buffer's market snapshots changed."
@@ -492,8 +499,9 @@ original five buttons instead of clipping the last one.")
 
 (defun ths--ranking-columns (columns &optional sort universe)
   "Return table fields for COLUMNS cells, keeping SORT's amount visible.
-Hong Kong and US rankings have no float market cap and no 60-day change, so
-those columns are dropped instead of being displayed as empty."
+UNIVERSE selects the ranking pool the fields describe.  Hong Kong and US
+rankings have no float market cap and no 60-day change, so those columns are
+dropped instead of being displayed as empty."
   (cond
    ((and (< columns 80) (memq universe '(etf lof hkstock usstock)))
     (append '((:code "代码" 8) (:name "名称" 10) (:price "最新" 8))
@@ -800,13 +808,13 @@ NAME is optional display metadata selected from stock search suggestions."
      42 'watchlist-panel)))
 
 (defun ths--detail (state ref width)
-  "Build the appropriate detail view for the selected security."
+  "Build the appropriate detail view of STATE's security within REF and WIDTH."
   (if (ths-data-otc-p (ths-data-find (plist-get state :selected)))
       (ths--fund-detail state ref width)
     (ths--exchange-detail state ref width)))
 
 (defun ths--fund-detail (state ref width)
-  "Display published fund values within STATE's panel and WIDTH."
+  "Display published fund values of STATE's security within REF and WIDTH."
   (let* ((stock (ths-data-find (plist-get state :selected)))
          (money (plist-get stock :money-fund))
          (accumulated (eq (plist-get state :chart) 'daily))
@@ -899,7 +907,8 @@ NAME is optional display metadata selected from stock search suggestions."
   "Build quote and chart panel from STATE and REF within WIDTH cells."
   (let ((stock (ths-data-find (plist-get state :selected)))
         (chart-width (- width 2))
-        (chart-rows (max 4 (- ths--panel-rows (ths--panel-overhead) 7 (if ths--roomy 2 0)))))
+        ;; 图表预算比改动前少 1 行：详情面板新增了 AI 摘要行（见下方 ai-* 绑定）。
+        (chart-rows (max 4 (- ths--panel-rows (ths--panel-overhead) 8 (if ths--roomy 2 0)))))
     (if (not stock)
         (ths--panel "个股详情" (list (ths--text "请从行情列表选择股票。")) width 'detail-panel)
       (let* ((change (ths-data-change stock))
@@ -907,7 +916,15 @@ NAME is optional display metadata selected from stock search suggestions."
              (available (if intraday (and (plist-get stock :points) (ths-data-chart-base stock))
                           (plist-get stock :candles)))
              (kind (if intraday 'intraday 'daily))
-             (chart-error (plist-get stock (intern (format ":%s-error" kind)))))
+             (chart-error (plist-get stock (intern (format ":%s-error" kind))))
+             ;; 摘要行与按钮共享 1 行；按钮与内边距约占 12–14 列，故文本预算取 width-14。
+             (ai-width (max 10 (- width 14)))
+             ;; 只取属于当前标的的条目：切换到另一只股票后，上一只的失败条目既不能再决定
+             ;; 文本（`ths-ai--panel-line` 按 stale 显示占位）也不能再决定配色。
+             (ai-entry (ths-ai--current-entry 'stock stock))
+             (ai-color (cond ((plist-get ai-entry :analysis) (ths-theme-color 'foreground))
+                             ((plist-get ai-entry :error) (ths-theme-color 'warning))
+                             (t (ths-theme-color 'secondary)))))
         (ths--panel
          (format "%s  %s  /  %s" (plist-get stock :name) (ths-data-id stock)
                  (plist-get stock :sector))
@@ -951,6 +968,13 @@ NAME is optional display metadata selected from stock search suggestions."
                                                                (format "         %s — %s" (plist-get (car candles) :date)
                                                                        (plist-get (car (last candles)) :date)))) (ths-theme-color 'muted))))))))
           (ths--space (if ths--roomy 1 0))
+          (etaf-node 'row '(:height (lh 1) :overflow hidden :item-gap (ch 1))
+                     (list (ths--text (truncate-string-to-width
+                                       (ths-ai--panel-line stock ai-width)
+                                       ai-width nil nil "…")
+                                      ai-color)
+                           (ths--button 'ai-analyze "AI 分析 A" #'ths-ai-analyze nil
+                                        "调用 AI 生成投机建议与盘面分析" t)))
           (ths--text (format "报价 %s · %s%s" (ths--source (plist-get stock :quote-source))
                              (or (plist-get stock :time) "暂无行情时间")
                              (if (plist-get stock :quote-error) " · 更新失败，保留上次数据" "")) (ths-theme-color 'secondary))
@@ -1222,7 +1246,8 @@ NAME is optional display metadata selected from stock search suggestions."
                    ("0" . ths-show-quotes) ("3" . ths-show-ranking)
                    ("u" . ths-ranking-cycle-universe)
                    ("n" . ths-next-page) ("p" . ths-previous-page)
-                   ("r" . ths-refresh) ("T" . ths-toggle-theme) ("q" . quit-window)))
+                   ("r" . ths-refresh) ("T" . ths-toggle-theme) ("q" . quit-window)
+                   ("A" . ths-ai-analyze)))
   (define-key ths-mode-map (kbd (car binding)) (cdr binding)))
 
 (define-minor-mode ths-mode
@@ -1247,6 +1272,10 @@ NAME is optional display metadata selected from stock search suggestions."
             (etaf-mount buffer (etaf-view (ths-dashboard :state state)))
             (setq-local ths--state state)
             (setq ths--session (list 'ths-session) ths--requests (make-hash-table :test #'equal))
+            ;; AI 状态按 buffer 隔离：结果缓存、在途请求表与分析发起时的看板 buffer。
+            (setq ths-ai--results (make-hash-table :test #'equal)
+                  ths-ai--requests (make-hash-table :test #'equal)
+                  ths-ai--dashboard-buffer buffer)
             (add-hook 'kill-buffer-hook #'ths--stop nil t)
             (read-only-mode 1)
             (ths-mode 1)
