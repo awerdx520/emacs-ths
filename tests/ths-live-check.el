@@ -73,7 +73,7 @@
 
 (defconst ths-live-check--source-hints
   '(("REPORT_DATE排序列不存在"
-     . "实盘列名为 REPORTDATE（2026-10-23 实测），ths-info--financials-url 仍用旧列名"))
+     . "列的拼写已改为 REPORTDATE（2026-10-23 修复）；若复现说明源侧列名再次变更"))
   "源侧拒绝对应到源码侧的已知线索。
 键为数据源原话片段，值为当日实测结果；只写进 skip 原因，方便按日志定位，
 本脚本不改源码。")
@@ -208,7 +208,7 @@ answers rows with `ITEM_VALUE: null'), so it is a skip, not a failure."
      :skip (format "%d 期但所有指标值为 null%s（源码缺陷候选，非网络问题）"
                    (length rows)
                    (if (equal market "us")
-                       "：实盘值在 AMOUNT 字段，解析读 :ITEM_VALUE（2026-10-23 实测）"
+                       "：实盘数值在 AMOUNT 字段（解析已读 AMOUNT，ITEM_VALUE 仅作回退）"
                      ""))))
    ((and (equal market "a") (not (numberp (plist-get (car rows) :revenue))))
     (ths-live-check--verdict :fail (format "首期 %s 缺 :revenue 数值"

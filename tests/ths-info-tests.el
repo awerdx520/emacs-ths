@@ -93,9 +93,10 @@
 
 (defconst ths-info-test-fin-a
   "{\"success\":1,\"result\":{\"pages\":1,\"data\":[\
-{\"SECURITY_CODE\":\"600519\",\"REPORT_DATE\":\"2026-06-30 00:00:00\",\"TOTAL_OPERATE_INCOME\":92278072083.21,\"PARENT_NETPROFIT\":46100000000.0,\"YSTZ\":9.16,\"SJLTZ\":8.9,\"BASIC_EPS\":36.72,\"WEIGHTAVG_ROE\":24.5,\"XSMLL\":91.5},\
-{\"SECURITY_CODE\":\"600519\",\"REPORT_DATE\":\"2026-03-31 00:00:00\",\"TOTAL_OPERATE_INCOME\":51443000000.0,\"PARENT_NETPROFIT\":26847000000.0,\"YSTZ\":10.4,\"SJLTZ\":11.2,\"BASIC_EPS\":21.37,\"WEIGHTAVG_ROE\":13.1,\"XSMLL\":92.0}]}}"
+{\"SECURITY_CODE\":\"600519\",\"REPORTDATE\":\"2026-06-30 00:00:00\",\"TOTAL_OPERATE_INCOME\":92278072083.21,\"PARENT_NETPROFIT\":46100000000.0,\"YSTZ\":9.16,\"SJLTZ\":8.9,\"BASIC_EPS\":36.72,\"WEIGHTAVG_ROE\":24.5,\"XSMLL\":91.5},\
+{\"SECURITY_CODE\":\"600519\",\"REPORTDATE\":\"2026-03-31 00:00:00\",\"TOTAL_OPERATE_INCOME\":51443000000.0,\"PARENT_NETPROFIT\":26847000000.0,\"YSTZ\":10.4,\"SJLTZ\":11.2,\"BASIC_EPS\":21.37,\"WEIGHTAVG_ROE\":13.1,\"XSMLL\":92.0}]}}"
   "A 股财报样本（2026-10-23 探测：`reportName=RPT_LICO_FN_CPD'，单位元，累计口径）。
+报告期字段是 `REPORTDATE'（无下划线，实盘如此）；排序列与行内字段同名。
 字段映射：TOTAL_OPERATE_INCOME→:revenue、PARENT_NETPROFIT→:net-profit、
 YSTZ→:revenue-yoy、SJLTZ→:profit-yoy、BASIC_EPS→:eps、
 WEIGHTAVG_ROE→:roe、XSMLL→:gross-margin。")
@@ -112,27 +113,35 @@ BASIC_EPS→:eps、ROE_AVG→:roe、GROSS_PROFIT_RATIO→:gross-margin。
 
 (defconst ths-info-test-fin-us
   "{\"success\":1,\"result\":{\"pages\":1,\"data\":[\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"营业总收入\",\"ITEM_VALUE\":391035000000.0,\"YOY_RATIO\":6.1},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"净利润\",\"ITEM_VALUE\":93736000000.0,\"YOY_RATIO\":-3.4},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"基本每股收益\",\"ITEM_VALUE\":6.13,\"YOY_RATIO\":-2.1},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"净资产收益率\",\"ITEM_VALUE\":157.4,\"YOY_RATIO\":4.2},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"毛利率\",\"ITEM_VALUE\":46.2,\"YOY_RATIO\":0.8},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"营业总收入\",\"ITEM_VALUE\":368472000000.0,\"YOY_RATIO\":2.0},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"净利润\",\"ITEM_VALUE\":97007000000.0,\"YOY_RATIO\":-0.5},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"基本每股收益\",\"ITEM_VALUE\":6.26,\"YOY_RATIO\":0.4},\
-{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"毛利率\",\"ITEM_VALUE\":45.8,\"YOY_RATIO\":1.1}]}}"
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"营业总收入\",\"AMOUNT\":391035000000.0,\"YOY_RATIO\":6.1},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"净利润\",\"AMOUNT\":93736000000.0,\"YOY_RATIO\":-3.4},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"基本每股收益\",\"AMOUNT\":6.13,\"YOY_RATIO\":-2.1},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"净资产收益率\",\"AMOUNT\":157.4,\"YOY_RATIO\":4.2},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"毛利率\",\"AMOUNT\":46.2,\"YOY_RATIO\":0.8},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"营业总收入\",\"AMOUNT\":368472000000.0,\"YOY_RATIO\":2.0},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"净利润\",\"AMOUNT\":97007000000.0,\"YOY_RATIO\":-0.5},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"基本每股收益\",\"AMOUNT\":6.26,\"YOY_RATIO\":0.4},\
+{\"SECUCODE\":\"AAPL.O\",\"REPORT\":\"2025/Q9\",\"ITEM_NAME\":\"毛利率\",\"AMOUNT\":45.8,\"YOY_RATIO\":1.1}]}}"
   "美股财报样本（2026-10-23 探测：`reportName=RPT_USF10_FN_INCOME' 长表）。
+数值列是 `AMOUNT'（不是 `ITEM_VALUE'，实盘 `ITEM_VALUE' 为 null）。
 长表按 REPORT 分组、按 ITEM_NAME 映射：营业总收入→:revenue、净利润→:net-profit、
 基本每股收益→:eps、净资产收益率→:roe、毛利率→:gross-margin，
 同比一律取同一指标的 YOY_RATIO。`2025/Q9' 组缺「净资产收益率」。
 报告期保留源标签 `YYYY/QN'（累计口径），不伪造日期。")
 
 (defconst ths-info-test-industry-html
-  "<table class=\"comInfo1\"><tr><td class=\"ct\" align=\"center\">所属行业板块：</td>\
-<td class=\"ct\" align=\"center\">白酒</td></tr>\
-<tr><td class=\"ct\" align=\"center\">上市日期：</td><td class=\"ct\" align=\"center\">2001-08-27</td></tr></table>"
+  (concat "<div class=\"nav\"><ul><li><a href=\"/corp/go.php/vCI_CorpOtherInfo\">"
+          "所属行业</a></li></ul></div>\n"
+          "<script type=\"text/template\"><tr><td class=\"ct\">@open@</td></tr></script>\n"
+          "<table class=\"comInfo1\">"
+          "<tr><td class=\"ct\" align=\"center\">所属行业板块：</td>"
+          "<td class=\"ct\" align=\"center\">白酒</td></tr>"
+          "<tr><td class=\"ct\" align=\"center\">上市日期：</td>"
+          "<td class=\"ct\" align=\"center\">2001-08-27</td></tr></table>")
   "新浪 corpOther 行业片段（2026-10-23 探测：页面为 GBK，所属行业单元格是申万名「白酒」）。
-此处为已解码后的 UTF-8 文本；GBK 解码链路由 `ths-info-gbk-decode' 单独覆盖。")
+前置导航（`所属行业'）与 JS 模板单元格（`@open@'）是实盘结构：旧解析取
+「所属行业」后第一个 `<td>'，命中的正是 `@open@'。此处为已解码后的 UTF-8 文本；
+GBK 解码链路由 `ths-info-gbk-decode' 单独覆盖。")
 
 (defconst ths-info-test-thshy-list
   "<table class=\"m-table\"><tbody>
@@ -454,13 +463,57 @@ OFF is a list of symbols such as `(ths-ai-macro-enabled)'."
     (should (numberp (plist-get latest :roe)))
     (should-not (plist-get older :roe))))
 
+(ert-deftest ths-info-financials-sort-column-is-reportdate ()
+  "A 股财报排序列必须是 `REPORTDATE'：源侧拒收 `REPORT_DATE'（2026-10-23 实测）。"
+  (let ((url (ths-info--financials-url "sh600519")))
+    (should (string-match-p "sortColumns=REPORTDATE" url))
+    (should-not (string-match-p "REPORT_DATE" url))
+    ;; 单参派生（市场 + 代码）与显式两参形式必须一致。
+    (should (equal url (ths-info--financials-url "a" "600519")))
+    ;; 港股报告确实用下划线拼写，保持 `REPORT_DATE'。
+    (should (string-match-p "sortColumns=REPORT_DATE"
+                            (ths-info--financials-url "hk" "00700")))
+    ;; 美股长表按 `REPORT' 排序，不受影响。
+    (should (string-match-p "sortColumns=REPORT&"
+                            (ths-info--financials-url "us" "AAPL")))))
+
+(ert-deftest ths-info-financials-us-reads-amount ()
+  "美股长表的数值在 `AMOUNT'：每期不得只剩 `:period'。"
+  (let* ((rows (ths-info--financials-parse "us" ths-info-test-fin-us))
+         (latest (car rows)))
+    (should (numberp (plist-get latest :revenue)))
+    (should (< (abs (- 391035000000.0 (plist-get latest :revenue))) 1.0))
+    ;; 旧拼写 `ITEM_VALUE' 仍被接受，源侧换拼写时不至于整表全空。
+    (let* ((legacy (concat "{\"success\":1,\"result\":{\"data\":["
+                           "{\"REPORT\":\"2026/Q9\",\"ITEM_NAME\":\"营业总收入\","
+                           "\"ITEM_VALUE\":1314000000,\"YOY_RATIO\":1.5}]}}"))
+           (row (car (ths-info--financials-parse "us" legacy))))
+      (should (= 1314000000 (plist-get row :revenue)))
+      (should (< (abs (- 1.5 (plist-get row :revenue-yoy))) 1e-9)))))
+
 (ert-deftest ths-info-industry-parse-name ()
-  "新浪 corpOther：取「所属行业」单元格，返回申万细分名。"
+  "新浪 corpOther：取「所属行业板块」单元格，返回申万细分名。"
   (let ((info (ths-info--industry-parse ths-info-test-industry-html)))
     (should (listp info))
-    (should (equal "白酒" (plist-get info :name))))
+    (should (equal "白酒" (plist-get info :name)))
+    ;; 前置导航里的 `所属行业' 与 JS 模板 `@open@' 都不得被当作行业名。
+    (should-not (string-match-p "@" (plist-get info :name))))
   ;; 页面结构不符 → nil，不是空字符串。
   (should-not (ths-info--industry-parse "<html><body>没有行业单元格</body></html>")))
+
+(ert-deftest ths-info-industry-parse-skips-template ()
+  "锚定「所属行业板块」表格：跳过导航文字与 `@open@' 模板占位符。"
+  (let* ((html (concat "<div class=\"nav\"><ul><li>所属行业</li></ul></div>"
+                       "<script><tr><td class=\"ct\">@open@</td></tr></script>"
+                       "<table><tr><td class=\"ct\">所属行业板块：</td>"
+                       "<td class=\"ct\">白酒Ⅱ</td></tr></table>"))
+         (info (ths-info--industry-parse html)))
+    (should (listp info))
+    (should (equal "白酒Ⅱ" (plist-get info :name)))
+    (should-not (string-match-p "@" (plist-get info :name))))
+  ;; 整页只有占位符 → nil，而不是 `@open@'。
+  (should-not (ths-info--industry-parse
+               "<table><tr><td class=\"ct\">@open@</td></tr></table>")))
 
 (ert-deftest ths-info-industry-change-match ()
   "同花顺行业列表按名字匹配当日涨跌幅；匹配不到返回 nil。"

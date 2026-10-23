@@ -275,11 +275,18 @@ A-share issuers use `ann_type=A', Hong Kong issuers `ann_type=H'."
                   "?art_code=%s&client_source=web&page_index=1")
           (url-hexify-string art-code)))
 
-(defun ths-info--financials-url (market code)
+(defun ths-info--financials-url (market &optional code)
   "Return the finance report URL for MARKET and CODE.
+CODE may be omitted: MARKET is then a market-qualified symbol such as
+`sh600519' and both the market and the bare code are derived from it.
 Each market has its own report name, filter field and sort column; the page
-size is widened for the US long table, which repeats the period per metric."
-  (let* ((report (pcase market
+size is widened for the US long table, which repeats the period per metric.
+The A-share sort column is `REPORTDATE': the provider rejects the
+underscored spelling with `REPORT_DATE排序列不存在' (probed 2026-10-23)."
+  (let* ((subject market)
+         (market (if code market (or (ths-info--symbol-market subject) "a")))
+         (code (or code (ths-info--symbol-code subject)))
+         (report (pcase market
                    ("hk" "RPT_HKF10_FN_MAININDICATOR")
                    ("us" "RPT_USF10_FN_INCOME")
                    (_ "RPT_LICO_FN_CPD")))
@@ -287,7 +294,10 @@ size is widened for the US long table, which repeats the period per metric."
                    ("hk" (format "(SECUCODE=\"%s.HK\")" code))
                    ("us" (format "(SECUCODE=\"%s.%s\")" code ths-info--us-secucode-suffix))
                    (_ (format "(SECURITY_CODE=\"%s\")" code))))
-         (sort (if (equal market "us") "REPORT" "REPORT_DATE"))
+         (sort (pcase market
+                 ("us" "REPORT")
+                 ("hk" "REPORT_DATE")
+                 (_ "REPORTDATE")))
          (size (if (equal market "us")
                    (* ths-info--financial-periods 10)
                  ths-info--financial-periods)))
@@ -351,11 +361,19 @@ paged Hong Kong filing) and not a character count."
     (when content
       (list :content content :pages pages))))
 
+(defun ths-info--report-date (row)
+  "Return ROW's report period as `YYYY-MM-DD', or nil.
+The A-share report names the column `REPORTDATE'; the Hong Kong report uses
+`REPORT_DATE'.  Both spellings are accepted so that one row reader serves
+every market, and a row without either field yields nil instead of a guess."
+  (or (ths-info--date-only (plist-get row :REPORTDATE))
+      (ths-info--date-only (plist-get row :REPORT_DATE))))
+
 (defun ths-info--financial-row (row fields)
   "Return ROW as a report plist using the FIELD mapping, or nil.
 A metric missing from ROW is left out of the plist instead of being zeroed."
   (when (listp row)
-    (let ((result (list :period (ths-info--date-only (plist-get row :REPORT_DATE)))))
+    (let ((result (list :period (ths-info--report-date row))))
       (dolist (field fields)
         (let ((value (ths-info--number
                       (plist-get row (intern (concat ":" (car field)))))))
@@ -367,7 +385,10 @@ A metric missing from ROW is left out of the plist instead of being zeroed."
   "Group the US long-table ROWS by `REPORT' and map `ITEM_NAME' to keys.
 Rows keep the provider order, so the newest period stays first; the source
 label (`2026/Q9', a cumulative period) is kept as `:period' verbatim rather
-than being turned into a made-up calendar date."
+than being turned into a made-up calendar date.  The metric value lives in
+`AMOUNT' (probed 2026-10-23); `ITEM_VALUE' is the older spelling of the same
+column and is still accepted, so a source that answers one spelling with null
+cannot zero the factor."
   (let ((periods nil))
     (dolist (row rows)
       (let* ((period (ths-info--clean-text (plist-get row :REPORT)))
@@ -378,7 +399,8 @@ than being turned into a made-up calendar date."
             (unless cell
               (setq cell (cons period (list :period period)))
               (push cell periods))
-            (let ((value (ths-info--number (plist-get row :ITEM_VALUE))))
+            (let ((value (or (ths-info--number (plist-get row :AMOUNT))
+                             (ths-info--number (plist-get row :ITEM_VALUE)))))
               (when value (setcdr cell (plist-put (cdr cell) key value))))
             (let ((yoy (ths-info--number (plist-get row :YOY_RATIO))))
               (when yoy
@@ -403,27 +425,54 @@ MARKET is \"a\", \"hk\" or \"us\"; every market answers with the same keys
                         ths-info--a-financial-fields)))
           (delq nil (mapcar (lambda (row) (ths-info--financial-row row fields)) rows)))))))
 
+(defconst ths-info--industry-label "所属行业板块"
+  "Label of the Sina corp table cell that carries the industry name.
+The page mentions 所属行业 in its navigation list as well, and it ships
+unrendered JavaScript template cells such as `@open@', so the parser anchors
+on this table label instead of the first 所属行业 occurrence.")
+
+(defconst ths-info--industry-cell-regexp
+  (concat "<td[ \t\r\n]+class=\"ct\"[^>]*>[ \t\r\n]*"
+          "\\(?:<[^>]*>\\)*[ \t\r\n]*\\([^<@]+\\)</td>")
+  "A `class=\"ct\"' table cell holding plain text.
+The captured value may contain neither `<' nor `@', so an unrendered template
+placeholder such as `@open@' can never be taken for an industry name.")
+
+(defconst ths-info--industry-placeholder-regexp "\\`@[^@]*@\\'"
+  "Shape of an unrendered template placeholder such as `@open@'.")
+
 (defun ths-info--industry-parse (text)
-  "Parse a Sina corp page TEXT into `(:name NAME)' for the 所属行业 cell.
+  "Parse a Sina corp page TEXT into `(:name NAME)' for the industry cell.
+The name is the first plain-text `class=\"ct\"' cell after the 所属行业板块
+label, so navigation entries and JavaScript templates (`@open@') are skipped.
 A fragment whose only cell is the industry name is accepted as well, because
-the GBK round-trip fixture is exactly such a fragment; a page without any
-cell yields nil."
+the GBK round-trip fixture is exactly such a fragment; a page without a usable
+cell yields nil rather than a placeholder."
   (when (stringp text)
-    (cond
-     ((and (string-match "所属行业" text)
-           (string-match "<td[^>]*>[[:space:]]*\\(?:<[^>]+>\\)*\\([^<]+\\)" text
-                         (match-end 0)))
-      (let ((name (ths-info--strip-tags (match-string 1 text))))
-        (when name (list :name name))))
-     ((= 1 (ths-info--count-matches "<td[ >]" text))
-      (when (string-match "<td[^>]*>[[:space:]]*\\(?:<[^>]+>\\)*\\([^<]+\\)" text)
-        (let ((name (ths-info--strip-tags (match-string 1 text))))
-          (when name (list :name name))))))))
+    (let ((pos 0) (found nil))
+      (while (and (not found) (string-match ths-info--industry-label text pos))
+        (let ((start (match-end 0)))
+          (setq pos (max (1+ pos) start))
+          (when (string-match ths-info--industry-cell-regexp text start)
+            (let ((name (ths-info--strip-tags (match-string 1 text))))
+              (when (and name
+                         (not (equal name ths-info--industry-label))
+                         (not (string-match-p
+                               ths-info--industry-placeholder-regexp name)))
+                (setq found (list :name name)))))))
+      (or found
+          (when (= 1 (ths-info--count-matches "<td[ >]" text))
+            (when (string-match "<td[^>]*>[[:space:]]*\\(?:<[^>]+>\\)*\\([^<@]+\\)"
+                                text)
+              (let ((name (ths-info--strip-tags (match-string 1 text))))
+                (when name (list :name name)))))))))
 
 (defun ths-info--industry-change (text name)
   "Return `(:name NAME :change PERCENT)' from the industry list TEXT, or nil.
 NAME must match the anchor text exactly; an unknown industry yields nil
-instead of a fabricated zero."
+instead of a fabricated zero.  The 同花顺 board ajax currently answers an
+anti-bot page without a single matching row (2026-10-23), so TEXT may be HTML
+that parses to nothing: the result is then nil and no error is signalled."
   (when (and (stringp text) (stringp name) (not (string-empty-p name)))
     (let ((regexp (concat "<a[^>]*>[[:space:]]*\\([^<]+\\)[[:space:]]*</a>[[:space:]]*</td>"
                           "[[:space:]]*<td[^>]*>[[:space:]]*"
