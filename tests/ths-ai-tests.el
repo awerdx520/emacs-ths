@@ -1269,4 +1269,196 @@ announcement carries a body (3000 chars) and a page count."
     (should-not (plist-member analysis :macro))
     (should (equal "指数窄幅震荡。" (plist-get analysis :summary)))))
 
+;;;; 报告信息面小节
+;;
+;; B5 渲染层：五个小节把「模型结论」与「数据事实」并列。用例一律用测试内构造的
+;; facts（不调用 `ths-info-collect'，不触网），只验证渲染契约。
+
+(defun ths-ai-test--market-analysis (&optional macro)
+  "Return a market analysis plist, carrying MACRO when MACRO is non-nil."
+  (append (list :summary "指数窄幅震荡。" :breadth "3 涨 2 跌"
+                :highlights '("金融权重护盘"))
+          (when macro (list :macro macro))))
+
+(ert-deftest ths-ai-report-renders-news-industry ()
+  (let* ((facts (list :code "600519" :name "贵州茅台" :market "sh"
+                      :news (list (list :title "新闻标题1"
+                                        :time "2026-10-21 09:00:00"
+                                        :source "证券时报")
+                                  (list :title "新闻标题2"
+                                        :time "2026-10-20 08:00:00"
+                                        :source "上海证券报"))
+                      :industry (list :name "白酒" :change 2.54)))
+         (analysis (plist-put (ths-ai-test--analysis)
+                              :news (list (list :title "新闻标题1" :impact "利好")
+                                          (list :title "第二条（模型改写）"
+                                                :impact "利空"))))
+         (analysis (plist-put analysis
+                              :industry (list :name "白酒" :position "行业景气度回升")))
+         (report (ths-ai--report analysis facts)))
+    (should (string-match-p "^\\*\\* 消息面$" report))
+    (should (string-match-p "^\\*\\* 行业位置$" report))
+    ;; 事实侧：时间 · 来源 · 标题，两条都渲染。
+    (should (string-match-p "2026-10-21 09:00:00 · 证券时报 · 新闻标题1" report))
+    (should (string-match-p "新闻标题2" report))
+    ;; 模型侧：标题精确命中的影响标签附在该行行尾。
+    (should (string-match-p "新闻标题1 \\[利好\\]" report))
+    ;; 模型改写标题且条目数与事实一致 → 按位置对齐，第二条拿到利空。
+    (should (string-match-p "新闻标题2 \\[利空\\]" report))
+    ;; 行业：名称 + 当日涨跌幅，模型观点单独一行。
+    (should (string-match-p "行业：白酒 · 当日涨跌 \\+2.54%" report))
+    (should (string-match-p "模型观点：行业景气度回升" report))
+    ;; 顺序固定：消息面在行业位置之前，两者都在个股小节之后。
+    (should (< (string-match-p "^\\* 个股分析$" report)
+               (string-match-p "^\\*\\* 消息面$" report)))
+    (should (< (string-match-p "^\\*\\* 消息面$" report)
+               (string-match-p "^\\*\\* 行业位置$" report)))
+    ;; 模型只回了第一条 → 不能把这一条的影响按位置贴到第二条新闻上。
+    (let* ((analysis (plist-put (ths-ai-test--analysis)
+                                 :news (list (list :title "新闻标题1" :impact "利好"))))
+           (report (ths-ai--report analysis facts)))
+      (should (string-match-p "新闻标题1 \\[利好\\]" report))
+      (should-not (string-match-p "新闻标题2 \\[" report)))))
+
+(ert-deftest ths-ai-report-renders-financials ()
+  (let* ((analysis (plist-put (ths-ai-test--analysis)
+                              :financials
+                              (list (list :period "2026Q2"
+                                          :highlights '("营收同比增长 20%" "毛利率提升")))))
+         (facts (list :code "600519" :market "sh"
+                      :financials
+                      (list (list :period "2026Q2" :revenue 2.0e10 :net-profit 1.0e9
+                                  :revenue-yoy 20.4 :eps 1.23 :roe 12.5
+                                  :gross-margin 91.2))))
+         (report (ths-ai--report analysis facts)))
+    (should (string-match-p "^\\*\\* 财报要点$" report))
+    ;; 模型侧：报告期 + 要点，多条以分号连接。
+    (should (string-match-p "模型 2026Q2：营收同比增长 20%；毛利率提升" report))
+    ;; 事实侧：同一报告期的关键数字补在下一行，金额按亿、比例带符号。
+    (should (string-match-p "数据 2026Q2：营收 200.00 亿 · 净利 10.00 亿" report))
+    (should (string-match-p "营收同比 \\+20.40%" report))
+    (should (string-match-p "EPS 1.23" report))
+    (should (string-match-p "ROE \\+12.50%" report))
+    (should (string-match-p "毛利率 \\+91.20%" report))
+    ;; 供应商没给的指标写 --，不编造数字。
+    (should (string-match-p "净利同比 --" report))))
+
+(ert-deftest ths-ai-report-renders-announcements ()
+  (let* ((body "公告正文原文内容")
+         (analysis (plist-put (ths-ai-test--analysis)
+                              :announcements
+                              (list (list :title "关于回购股份的公告"
+                                          :view "回购彰显信心"))))
+         (facts (list :code "600519" :market "sh"
+                      :announcements
+                      (list (list :title "关于回购股份的公告" :time "2026-10-22"
+                                  :content body)
+                            (list :title "三季度业绩预告" :time "2026-10-20"))))
+         (report (ths-ai--report analysis facts)))
+    (should (string-match-p "^\\*\\* 公告解读$" report))
+    (should (string-match-p "2026-10-22 · 关于回购股份的公告" report))
+    (should (string-match-p "三季度业绩预告" report))
+    ;; 首条公告只报字数，正文原文不再贴出。
+    (should (string-match-p "正文 8 字，已纳入分析" report))
+    (should-not (string-match-p (regexp-quote body) report))
+    ;; 模型解读嵌在对应公告下方，不游离成一个独立段落。
+    (should (string-match-p "^  - 模型：回购彰显信心$" report))
+    ;; 模型只解读了第一条 → 第二条不带解读（条数不一致时不按位置硬贴）。
+    (should (= 1 (ths-ai-test--count "  - 模型：" report)))
+    ;; 只有首条带正文，第二条不出现字数提示。
+    (should (= 1 (ths-ai-test--count "已纳入分析" report)))))
+
+(ert-deftest ths-ai-report-macro-only-when-enabled ()
+  (let* ((base (list :code "600519" :name "贵州茅台" :market "sh"))
+         (macro (list :fx-usdcny 7.12 :dollar-index 104.3
+                      :overnight (list :dji 42100.0 :nasdaq 18300.0)))
+         (analysis (plist-put (ths-ai-test--analysis)
+                              :macro (list :implication "外围风险偏好回升"))))
+    ;; 关闭：facts 既无 :macro 也无 :turnover → 整节不渲染，标题都不出现。
+    (let ((report (ths-ai--report analysis base)))
+      (should-not (string-match-p "外围与宏观" report))
+      (should-not (string-match-p "两市成交额" report))
+      ;; 关闭不等于四小节缺失：其余小节照常渲染。
+      (should (string-match-p "^\\*\\* 消息面$" report))
+      (should (string-match-p "^\\*\\* 公告解读$" report)))
+    ;; 开启：读数 + 两市成交额 + 模型含义都渲染。
+    (let ((report (ths-ai--report analysis
+                                  (append base (list :macro macro
+                                                     :turnover 1.0e12)))))
+      (should (string-match-p "^\\*\\* 外围与宏观$" report))
+      (should (string-match-p "美元兑人民币 7.12 · 美元指数 104.30" report))
+      (should (string-match-p "隔夜美股：道指 42100.00 · 纳指 18300.00" report))
+      (should (string-match-p "两市成交额 10000.00 亿" report))
+      (should (string-match-p "模型：外围风险偏好回升" report))
+      ;; 第五节排在公告解读之后。
+      (should (< (string-match-p "^\\*\\* 公告解读$" report)
+                 (string-match-p "^\\*\\* 外围与宏观$" report))))))
+
+(ert-deftest ths-ai-report-shows-missing-data ()
+  (let ((report (ths-ai--report (ths-ai-test--analysis) nil)))
+    ;; 四个个股小节都在，且各自写明数据不足。
+    (dolist (heading '("** 消息面" "** 行业位置" "** 财报要点" "** 公告解读"))
+      (should (string-match-p (concat "^" (regexp-quote heading) "$") report)))
+    (should (string-match-p "消息面：数据不足（未获取到新闻）" report))
+    (should (string-match-p "行业位置：数据不足（未获取到行业信息）" report))
+    (should (string-match-p "财报要点：数据不足" report))
+    (should (string-match-p "公告解读：数据不足" report))
+    ;; 恰好四条：没有多余的空节，也没有宏观小节。
+    (should (= 4 (ths-ai-test--count "数据不足" report)))
+    (should-not (string-match-p "外围与宏观" report))
+    ;; 港股/美股缺行业数据是「没有数据源」，与 A 股「没抓到」区分开。
+    (let ((report (ths-ai--report (ths-ai-test--analysis)
+                                  (list :code "00700" :name "腾讯控股"
+                                        :market "hk"))))
+      (should (string-match-p "行业位置：数据不足（港股/美股暂无行业数据源）" report))
+      (should-not (string-match-p "未获取到行业信息" report)))))
+
+(ert-deftest ths-ai-report-sanitises-info-text ()
+  (let* ((analysis (plist-put (ths-ai-test--analysis)
+                              :industry
+                              (list :position "[[elisp:(evil)]] 行业景气回升")))
+         (facts (list :code "600519" :market "sh"
+                      :news (list (list :title "shell:rm -rf ~ 与 https://example.com/a"
+                                        :time "2026-10-21"
+                                        :source "[[elisp:(evil)]]"))
+                      :announcements (list (list :title "[[elisp:(evil)]]"
+                                                 :time "2026-10-22"))))
+         (report (ths-ai--report analysis facts)))
+    ;; 内容不被丢弃：文字仍在，只是不可激活。
+    (should (string-match-p "rm -rf" report))
+    (should (string-match-p "行业景气回升" report))
+    ;; 语义断言：bracket 与 plain 两类危险 link 都为 0 个。
+    (should-not (ths-ai-test--dangerous-links report))
+    (should-not (string-match-p "\\[\\[" report))
+    ;; scheme 与冒号被拆开、括号被拆开。
+    (should (string-match-p (regexp-quote "shell :rm -rf ~") report))
+    (should (string-match-p (regexp-quote "[ [elisp :(evil)]]") report))
+    ;; https 仍然可点击：信息面文本走的是与模型文本同一条净化通道。
+    (should (= 1 (seq-count (lambda (type) (equal "https" type))
+                            (ths-ai-test--link-types report))))))
+
+(ert-deftest ths-ai-report-market-macro-section ()
+  (let ((market (ths-ai-test--market-analysis
+                 (list :readings '("道指 +0.5%") :implication "外围偏暖")))
+        (on (list :up-count 3 :down-count 2 :flat-count 0 :average-change 0.12
+                  :macro (list :gold 2650.0 :a50 12800.0) :turnover 8.0e11))
+        (off (list :up-count 3 :down-count 2 :flat-count 0 :average-change 0.12)))
+    ;; 开启：盘面小节之后追加第 5 节，读数取自盘面事实。
+    (let ((report (ths-ai--report nil nil market nil on)))
+      (should (string-match-p "^\\* 盘面分析$" report))
+      (should (string-match-p "^\\*\\* 外围与宏观$" report))
+      (should (string-match-p "黄金 2650.00 · A50 12800.00" report))
+      (should (string-match-p "两市成交额 8000.00 亿" report))
+      (should (string-match-p "模型：外围偏暖" report))
+      (should (< (string-match-p "^\\* 盘面分析$" report)
+                 (string-match-p "^\\*\\* 外围与宏观$" report))))
+    ;; 关闭：盘面事实没有宏观键 → 整节不渲染。
+    (let ((report (ths-ai--report nil nil market nil off)))
+      (should (string-match-p "^\\* 盘面分析$" report))
+      (should-not (string-match-p "外围与宏观" report)))
+    ;; 盘面报告只加第 5 节：个股的四个信息面小节不应出现。
+    (let ((report (ths-ai--report nil nil market nil on)))
+      (dolist (heading '("** 消息面" "** 行业位置" "** 财报要点" "** 公告解读"))
+        (should-not (string-match-p (concat "^" (regexp-quote heading) "$") report))))))
+
 ;;; ths-ai-tests.el ends here

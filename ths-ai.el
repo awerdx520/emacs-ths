@@ -379,6 +379,9 @@ INFO, when given, is the plist `ths-info-collect' hands to its callback.  The
 information factors (`:news', `:industry', `:financials', `:announcements')
 are appended from `ths-ai--info-facts'; a factor that is switched off or came
 back empty contributes no key at all, so the prompt prints no line for it.
+The `:market' key is the security's market prefix (`ths-data-market-key'); it is
+not part of `ths-ai--stock-fact-order', so it never reaches the prompt — the
+report uses it to tell a missing industry reading from an absent source.
 Callers that pass STOCK alone keep exactly the local-market facts."
   (let* ((points (ths-ai--points stock))
          (prices (delq nil (mapcar (lambda (point) (plist-get point :price)) points)))
@@ -388,6 +391,7 @@ Callers that pass STOCK alone keep exactly the local-market facts."
      (list :code (plist-get stock :code)
            :name (ths-ai--field (plist-get stock :name))
            :sector (ths-ai--field (plist-get stock :sector))
+           :market (ths-data-market-key stock)
            :price (plist-get stock :price)
            :change (ths-data-change stock)
            :close (plist-get stock :close)
@@ -1021,6 +1025,359 @@ Model strings are sanitised exactly as in `ths-ai--stock-section'."
           (ths-ai--bullet-list (plist-get analysis :highlights) "- 模型未给出亮点。")))
    "\n"))
 
+;;;; 报告信息面小节
+;;
+;; 五个小节把「数据事实」与「模型结论」并排呈现，顺序固定：消息面 → 行业位置 →
+;; 财报要点 → 公告解读 → 外围与宏观。数据侧来自 `ths-ai--info-facts' 产出的键
+;; （`:news' `:industry' `:financials' `:announcements' `:macro' `:turnover'），
+;; 结论侧来自模型回复的同名字段。缺数据时不静默省略小节，而是明示「数据不足」——
+;; 读者必须能区分「没抓到数据」和「模型没给结论」；唯一例外是外围与宏观：它的开关
+;; 默认关闭，关闭时整节不渲染，否则每份报告都会多出一段与配置无关的噪音。
+;;
+;; 所有外部文本（新闻标题与来源、公告标题、模型给出的 highlights / view /
+;; implication / position）一律经 `ths-ai--clean-text'（内部就是
+;; `ths-ai--sanitise'），与既有各段同一条通道；整篇报告最后仍由
+;; `ths-ai--report-finalise' 兜底。
+
+(defconst ths-ai--no-news-line
+  "消息面：数据不足（未获取到新闻）"
+  "Line printed by the 消息面 block when the news factor is empty.")
+
+(defconst ths-ai--no-industry-line
+  "行业位置：数据不足（未获取到行业信息）"
+  "Line printed by 行业位置 when an A-share has no industry reading.")
+
+(defconst ths-ai--no-industry-abroad-line
+  "行业位置：数据不足（港股/美股暂无行业数据源）"
+  "Line printed by 行业位置 for a security that has no industry source at all.
+`ths-info-collect' requests the industry reading for A-shares only, so a Hong
+Kong or US security is missing the source rather than a response, and saying so
+keeps the reader from retrying a request that can never succeed.")
+
+(defconst ths-ai--no-financials-line
+  "财报要点：数据不足"
+  "Line printed by 财报要点 when neither the model nor the provider had reports.")
+
+(defconst ths-ai--no-announcements-line
+  "公告解读：数据不足"
+  "Line printed by 公告解读 when the announcement factor is empty.")
+
+(defconst ths-ai--report-announcement-lines 3
+  "Maximum number of announcement headlines a report lists.
+The prompt may carry more (`ths-ai-announcements-count'); the report stays short
+because three headlines plus the model's view already fill the block.")
+
+(defconst ths-ai--financial-labels
+  '((:revenue . "营收") (:net-profit . "净利") (:revenue-yoy . "营收同比")
+    (:profit-yoy . "净利同比") (:eps . "EPS") (:roe . "ROE")
+    (:gross-margin . "毛利率"))
+  "Labels of the 财报要点 numbers, in display order.
+The keys are exactly `ths-ai--financial-metrics'; the amount keys print in 亿 and
+the ratio keys print as signed percentages.")
+
+(defconst ths-ai--financial-amount-keys
+  '(:revenue :net-profit)
+  "Report metrics measured in currency; the report prints them in 亿.")
+
+(defconst ths-ai--financial-percent-keys
+  '(:revenue-yoy :profit-yoy :roe :gross-margin)
+  "Report metrics measured in percent; the report prints them with a sign.")
+
+(defconst ths-ai--macro-labels
+  '((:fx-usdcny . "美元兑人民币") (:dollar-index . "美元指数")
+    (:oil . "原油") (:gold . "黄金") (:a50 . "A50")
+    (:hsi-future . "恒指期货"))
+  "Labels of the macro readings, in display order.
+The keys are `ths-ai--macro-keys' minus `:overnight', which has its own line
+\(`ths-ai--overnight-labels').")
+
+(defconst ths-ai--overnight-labels
+  '((:dji . "道指") (:nasdaq . "纳指") (:sp500 . "标普500"))
+  "Labels of the overnight overseas index levels in `:overnight'.")
+
+(defun ths-ai--clean-text (value)
+  "Return VALUE as a sanitised single line string, or nil when unprintable.
+Every externally controlled string that reaches a report line passes here, so a
+headline cannot introduce a line break, an Org directive or an activatable link,
+and a blank string degrades to nil instead of printing an empty field.  Numbers
+are rendered as text (a model sometimes answers `change' as a number) and any
+other shape is dropped."
+  (cond
+   ((null value) nil)
+   ((stringp value)
+    (let ((text (ths-ai--sanitise value t)))
+      (and (not (string-blank-p text)) text)))
+   ((numberp value) (format "%s" value))
+   (t nil)))
+
+(defun ths-ai--report-number (value)
+  "Return VALUE as a two decimal number, or `--' when it is not one.
+A dash is the honest rendering of an unreported metric: a zero would read as a
+real value the provider never sent."
+  (if (numberp value) (format "%.2f" value) "--"))
+
+(defun ths-ai--report-amount (value)
+  "Return VALUE (in the security's currency) rendered in 亿, or `--'.
+The provider reports amounts in yuan/dollars; 亿 keeps the line readable without
+inventing a precision the source does not have."
+  (if (numberp value) (format "%.2f 亿" (/ value 1.0e8)) "--"))
+
+(defun ths-ai--report-percent (value)
+  "Return VALUE as a signed percentage, or `--' when it is not usable.
+A string VALUE is kept (a model answers `change' as \"+2.5%\") but sanitised, so
+the model side of the line obeys the same rule as the fact side."
+  (cond
+   ((numberp value) (format "%+.2f%%" value))
+   ((stringp value) (or (ths-ai--clean-text value) "--"))
+   (t "--")))
+
+(defun ths-ai--info-match (title items index total)
+  "Return the entry of the model's ITEMS list that belongs to TITLE.
+A title match wins, because identical titles are evidence the entry is about
+this headline.  Position INDEX is only a fallback when the model answered as
+many entries as it was given facts (TOTAL), which is the shape the prompt asks
+for; a shorter or longer list means the model edited the selection, and aligning
+by position would then pin one headline's verdict on another."
+  (or (seq-find (lambda (item) (equal title (plist-get item :title))) items)
+      (and (= (length items) total) (nth index items))))
+
+(defun ths-ai--news-impact (title items index total)
+  "Return the model's impact tag for the headline TITLE, or nil.
+ITEMS, INDEX and TOTAL belong to `ths-ai--info-match'.  The tag is sanitised
+like any other model text and a blank tag means the model gave none."
+  (ths-ai--clean-text (plist-get (ths-ai--info-match title items index total)
+                                 :impact)))
+
+(defun ths-ai--news-lines (news model-news)
+  "Return NEWS fact rows as Org bullets, with the model's impact tag appended.
+Each bullet reads `时间 · 来源 · 标题', the three fields the prompt sent, and the
+model's `impact' follows in brackets (`[利好]') when it gave one.  A row whose
+fields are all blank still produces a bullet: silently dropping it would make
+the report claim fewer headlines than were analysed."
+  (let* ((rows (seq-filter #'listp news))
+         (total (length rows))
+         (items (seq-filter #'listp model-news))
+         (index 0)
+         (lines nil))
+    (dolist (row rows)
+      (let* ((title (plist-get row :title))
+             (head (string-join
+                    (delq nil (list (ths-ai--clean-text (plist-get row :time))
+                                    (ths-ai--clean-text (plist-get row :source))
+                                    (ths-ai--clean-text title)))
+                    " · "))
+             (impact (ths-ai--news-impact title items index total)))
+        (push (format "- %s%s"
+                      (if (string-empty-p head) "（无标题）" head)
+                      (if impact (format " [%s]" impact) ""))
+              lines)
+        (setq index (1+ index))))
+    (nreverse lines)))
+
+(defun ths-ai--news-section (analysis facts)
+  "Return the 消息面 Org block of FACTS and ANALYSIS.
+FACTS' `:news' rows are the data side; the model side is the `impact' of its own
+`news' entries.  Without the news factor the block states that nothing was
+fetched instead of pretending the absence is the model's conclusion."
+  (let ((news (seq-filter #'listp (plist-get facts :news))))
+    (string-join
+     (append (list "** 消息面")
+             (if news
+                 (ths-ai--news-lines news (plist-get analysis :news))
+               (list (format "- %s" ths-ai--no-news-line))))
+     "\n")))
+
+(defun ths-ai--industry-gap-line (facts)
+  "Return the 行业位置 missing-data line appropriate for FACTS' security.
+The market key comes from the `:market' fact (`ths-data-market-key'), so a Hong
+Kong or US security reports the missing source while an A-share reports the
+missing reading; an unknown market counts as A-share, which is the common case."
+  (if (member (plist-get facts :market) '("hk" "us"))
+      ths-ai--no-industry-abroad-line
+    ths-ai--no-industry-line))
+
+(defun ths-ai--industry-section (analysis facts)
+  "Return the 行业位置 Org block of FACTS and ANALYSIS.
+The fact side is the sector name with its same-day change, the model side is
+`industry.position'.  The two are independent: a model conclusion without an
+industry reading still renders, and so does a reading the model ignored."
+  (let* ((industry (plist-get facts :industry))
+         (name (ths-ai--clean-text (plist-get industry :name)))
+         (position (ths-ai--clean-text
+                    (plist-get (plist-get analysis :industry) :position))))
+    (string-join
+     (delq nil
+           (list "** 行业位置"
+                 (if industry
+                     (format "- 行业：%s · 当日涨跌 %s"
+                             (or name "--")
+                             (ths-ai--report-percent (plist-get industry :change)))
+                   (format "- %s" (ths-ai--industry-gap-line facts)))
+                 (when position (format "- 模型观点：%s" position))))
+     "\n")))
+
+(defun ths-ai--financial-numbers (row)
+  "Return ROW's key metrics as one line of `标签 值' pairs.
+Every metric ROW omitted prints `--', so the reader can tell an unreported
+figure from a period that is absent altogether."
+  (string-join
+   (mapcar (lambda (pair)
+             (let* ((key (car pair))
+                    (value (plist-get row key))
+                    (text (cond
+                           ((memq key ths-ai--financial-amount-keys)
+                            (ths-ai--report-amount value))
+                           ((memq key ths-ai--financial-percent-keys)
+                            (ths-ai--report-percent value))
+                           (t (ths-ai--report-number value)))))
+               (format "%s %s" (cdr pair) text)))
+           ths-ai--financial-labels)
+   " · "))
+
+(defun ths-ai--financial-model-lines (model)
+  "Return MODEL's `financials' entries as `报告期：highlights' bullets.
+The entries lead the block because a conclusion is what the section is for; the
+provider rows behind them follow."
+  (mapcar
+   (lambda (item)
+     (let* ((period (ths-ai--clean-text (plist-get item :period)))
+            (raw (plist-get item :highlights))
+            (highlights (delq nil (mapcar #'ths-ai--clean-text
+                                         (if (listp raw) raw (list raw)))))
+            (text (string-join highlights "；")))
+       (format "- 模型 %s：%s"
+               (or period "--")
+               (if (string-empty-p text) "未给出要点" text))))
+   model))
+
+(defun ths-ai--financial-fact-lines (rows)
+  "Return ROWS as data bullets: the report period plus its key numbers."
+  (mapcar (lambda (row)
+            (format "- 数据 %s：%s"
+                    (or (ths-ai--clean-text (plist-get row :period)) "--")
+                    (ths-ai--financial-numbers row)))
+          rows))
+
+(defun ths-ai--financial-section (analysis facts)
+  "Return the 财报要点 Org block of FACTS and ANALYSIS.
+The model's `financials' entries come first and the provider rows second, so the
+reader sees the conclusion and the numbers it was drawn from in one place.  The
+block is present only as data when either side has something; with neither it
+says so."
+  (let ((model (seq-filter #'listp (plist-get analysis :financials)))
+        (rows (seq-filter #'listp (plist-get facts :financials))))
+    (string-join
+     (delq nil
+           (append
+            (list "** 财报要点")
+            (if (or model rows)
+                (append (ths-ai--financial-model-lines model)
+                        (ths-ai--financial-fact-lines rows))
+              (list (format "- %s" ths-ai--no-financials-line)))))
+     "\n")))
+
+(defun ths-ai--announcement-lines (row index model total)
+  "Return ROW as a bullet plus the model's view of it.
+INDEX, MODEL and TOTAL belong to `ths-ai--info-match': the view is matched by
+title first and by position only when the model answered one entry per fact.
+ROW's `:content' is never printed — only its length — because the analysis
+already read the body and pasting it back would inflate the report without
+adding information."
+  (let* ((raw-title (plist-get row :title))
+         (title (ths-ai--clean-text raw-title))
+         (time (ths-ai--clean-text (plist-get row :time)))
+         (content (plist-get row :content))
+         (notice (when (and (stringp content) (not (string-empty-p content)))
+                   (format "正文 %d 字，已纳入分析" (length content))))
+         (head (string-join (delq nil (list time title notice)) " · "))
+         (view (ths-ai--clean-text
+                (plist-get (ths-ai--info-match raw-title model index total)
+                           :view))))
+    (list (format "- %s" (if (string-empty-p head) "（无标题）" head))
+          (when view (format "  - 模型：%s" view)))))
+
+(defun ths-ai--announcement-section (analysis facts)
+  "Return the 公告解读 Org block of FACTS and ANALYSIS.
+The fact side lists at most `ths-ai--report-announcement-lines' headlines; each
+headline carries the model's `view' nested under it, so a view is never detached
+from the announcement it is about."
+  (let* ((items (seq-take (seq-filter #'listp (plist-get facts :announcements))
+                          ths-ai--report-announcement-lines))
+         (total (length items))
+         (model (seq-filter #'listp (plist-get analysis :announcements))))
+    (string-join
+     (delq nil
+           (append
+            (list "** 公告解读")
+            (if items
+                (cl-loop for row in items
+                         for index from 0
+                         append (ths-ai--announcement-lines row index model total))
+              (list (format "- %s" ths-ai--no-announcements-line)))))
+     "\n")))
+
+(defun ths-ai--macro-readings-line (macro)
+  "Return MACRO's readings as one `名称 值' line.
+A reading the panel did not report is left out instead of printing `--': the
+panel is a snapshot of prices, and a dash there would read as a real value of
+zero.  The names are this module's own constants, but the assembled line still
+passes `ths-ai--sanitise' so the block obeys the same rule as every other line."
+  (let ((parts nil))
+    (dolist (pair ths-ai--macro-labels)
+      (let ((value (plist-get macro (car pair))))
+        (when (numberp value)
+          (push (format "%s %s" (cdr pair) (ths-ai--report-number value)) parts))))
+    (ths-ai--clean-text (string-join (nreverse parts) " · "))))
+
+(defun ths-ai--overnight-line (overnight)
+  "Return OVERNIGHT's overseas index levels as one `名称 值' line.
+A level the provider did not report is left out, for the same reason the macro
+readings drop theirs."
+  (let ((parts nil))
+    (dolist (pair ths-ai--overnight-labels)
+      (let ((value (plist-get overnight (car pair))))
+        (when (numberp value)
+          (push (format "%s %s" (cdr pair) (ths-ai--report-number value)) parts))))
+    (ths-ai--clean-text (string-join (nreverse parts) " · "))))
+
+(defun ths-ai--macro-section (facts analysis)
+  "Return the 外围与宏观 Org block, or nil when the factor is off or empty.
+The block renders only when FACTS carries `:macro' or `:turnover'.  The macro
+factor is off by default and a switched-off factor prints nothing at all: a
+\"数据不足\" line here would report a failure that is really a configuration
+choice.  The fact side is the readings plus the market-wide turnover, the model
+side is `macro.implication'."
+  (let ((macro (plist-get facts :macro))
+        (turnover (plist-get facts :turnover)))
+    (when (or macro turnover)
+      (let* ((readings (and macro (ths-ai--macro-readings-line macro)))
+             (overnight (and macro (ths-ai--overnight-line
+                                    (plist-get macro :overnight))))
+             (implication (ths-ai--clean-text
+                           (plist-get (plist-get analysis :macro) :implication))))
+        (string-join
+         (delq nil
+               (list "** 外围与宏观"
+                     (when readings (format "- %s" readings))
+                     (when overnight (format "- 隔夜美股：%s" overnight))
+                     (when (numberp turnover)
+                       (format "- 两市成交额 %s" (ths-ai--report-amount turnover)))
+                     (when implication (format "- 模型：%s" implication))))
+         "\n")))))
+
+(defun ths-ai--stock-info-sections (analysis facts)
+  "Return the information blocks of a stock report as a list of Org blocks.
+The order is fixed — 消息面, 行业位置, 财报要点, 公告解读, 外围与宏观 — so two
+reports of the same security read the same way.  The first four always render,
+stating \"数据不足\" when the fact is absent; the macro block renders only when
+FACTS carries the factor (see `ths-ai--macro-section')."
+  (delq nil
+        (list (ths-ai--news-section analysis facts)
+              (ths-ai--industry-section analysis facts)
+              (ths-ai--financial-section analysis facts)
+              (ths-ai--announcement-section analysis facts)
+              (ths-ai--macro-section facts analysis))))
+
 (defun ths-ai--report-finalise (text)
   "Return TEXT with the report wide link backstop applied.
 Every variable string already went through `ths-ai--sanitise' — the stock and
@@ -1044,16 +1401,23 @@ The function is idempotent: both steps stop at a fixed point (see
 returns an `equal' string."
   (ths-ai--neutralise-schemes (ths-ai--neutralise-links text)))
 
-(defun ths-ai--report (analysis &optional facts market errors)
+(defun ths-ai--report (analysis &optional facts market errors market-facts)
   "Return an Org formatted report text for the stock ANALYSIS.
 FACTS is the stock facts plist the analysis was requested from, MARKET the
-optional parsed market analysis, and ERRORS optional Org error sections.  The
-header, snapshot and error block all come from these arguments instead of the
-live dashboard selection, which is what keeps a report naming the security it
-was generated for after the selection moved on.  Every model supplied string
-arrives through `ths-ai--stock-section' / `ths-ai--market-section', which
-sanitise it, and the assembled text passes `ths-ai--report-finalise' once more
-as the last line of defence."
+optional parsed market analysis, and ERRORS optional Org error sections.
+MARKET-FACTS is the market facts plist, used only for the 外围与宏观 block of the
+market report: those readings describe the whole market, so falling back to the
+stock facts (the fifth argument is optional) is what a caller that analysed only
+one security wants.  The header, snapshot and error block all come from these
+arguments instead of the live dashboard selection, which is what keeps a report
+naming the security it was generated for after the selection moved on.
+
+The stock part is `ths-ai--stock-section' followed by the five information
+blocks of `ths-ai--stock-info-sections', the market part is
+`ths-ai--market-section' followed by its own 外围与宏观 block.  Every model
+supplied string arrives through those functions, which sanitise it, and the
+assembled text passes `ths-ai--report-finalise' once more as the last line of
+defence."
   (ths-ai--report-finalise
    (string-join
     (delq nil
@@ -1061,12 +1425,21 @@ as the last line of defence."
                 (format "#+DATE: %s" (format-time-string "%F %T"))
                 ""
                 (if analysis
-                    (ths-ai--stock-section analysis)
+                    (string-join
+                     (cons (ths-ai--stock-section analysis)
+                           (ths-ai--stock-info-sections analysis facts))
+                     "\n\n")
                   (format "* 个股分析\n- %s"
                           (if errors
                               "个股分析失败，原因见下方异常。"
                             "无选中标的，本次仅分析盘面。")))
-                (when market (ths-ai--market-section market))
+                (when market
+                  (string-join
+                   (delq nil
+                         (list (ths-ai--market-section market)
+                               (ths-ai--macro-section (or market-facts facts)
+                                                      market)))
+                   "\n\n"))
                 (when errors (string-join errors "\n"))
                 (ths-ai--snapshot-section facts)
                 ""
@@ -1833,7 +2206,9 @@ for after the user switched to another stock."
                     (plist-get stock :facts)
                     (plist-get market :analysis)
                     (delq nil (list (ths-ai--error-section 'stock)
-                                    (ths-ai--error-section 'market))))))
+                                    (ths-ai--error-section 'market)))
+                    ;; 盘面的外围与宏观读数来自盘面事实，不能借用个股事实里的同名字段。
+                    (plist-get market :facts))))
 
 (defun ths-ai--refit-dashboard (&optional buffer)
   "Let BUFFER (default `ths-ai--dashboard-buffer') recompute its layout.
