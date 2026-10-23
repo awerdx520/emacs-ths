@@ -142,17 +142,32 @@
         ;; A transport can fail synchronously (e.g. curl is missing).
         (when (gethash key ths--requests) (puthash key cancel ths--requests))))))
 
+(defun ths--slow-kind-p (stock kind)
+  "Return non-nil when STOCK's KIND refreshes on the fifteen minute cadence.
+Off-exchange funds publish one net value per day and US daily candles come
+from a full-history fallback, so both would otherwise be re-requested on
+every quote refresh."
+  (or (ths-data-otc-p stock)
+      (and (eq kind 'daily)
+           (equal (ths-data-market-key (plist-get stock :symbol)) "us"))))
+
 (defun ths--ensure-chart (&optional force)
-  "Fetch the selected chart and trades if expired, or when FORCE is non-nil."
+  "Fetch the selected chart and trades if expired, or when FORCE is non-nil.
+Hong Kong and US markets publish no tick-like trade records, so their
+request list carries the chart only: no trades request is ever issued."
   (when (and ths-auto-fetch ths--session
              (not (eq (plist-get (etaf-value ths--state) :page) 'ranking)))
     (let* ((state (etaf-value ths--state))
            (stock (ths-data-find (plist-get state :selected))))
       (when stock
-        (dolist (kind (if (ths-data-otc-p stock) '(quote)
-                        (list (plist-get state :chart) 'trades)))
+        (dolist (kind (cond ((ths-data-otc-p stock) '(quote))
+                            ((member (ths-data-market-key (plist-get stock :symbol)) '("hk" "us"))
+                             (list (plist-get state :chart)))
+                            (t (list (plist-get state :chart) 'trades))))
           (let ((stamp (plist-get stock (intern (format ":%s-fetched-at" kind)))))
-            (when (or force (not stamp) (> (- (float-time) stamp) (if (ths-data-otc-p stock) 900 (or ths-refresh-interval 30))))
+            (when (or force (not stamp)
+                      (> (- (float-time) stamp)
+                         (if (ths--slow-kind-p stock kind) 900 (or ths-refresh-interval 30))))
               (ths--fetch (plist-get stock :symbol) kind))))))))
 
 (defun ths-refresh (&optional automatic)
@@ -300,10 +315,11 @@ AUTOMATIC limits published fund updates to once every fifteen minutes."
     (ths--ranking-restore-focus t)))
 
 (defun ths-ranking-cycle-universe ()
-  "Cycle between A shares, ETF and LOF rankings, keeping the current sort."
+  "Cycle A shares, ETF, LOF, Hong Kong and US rankings, keeping the sort."
   (interactive)
   (let ((universe (plist-get (etaf-value ths--state) :ranking-universe)))
-    (ths-ranking-set-universe (pcase universe ('etf 'lof) ('lof 'stock) (_ 'etf)))))
+    (ths-ranking-set-universe
+     (pcase universe ('stock 'etf) ('etf 'lof) ('lof 'hkstock) ('hkstock 'usstock) (_ 'stock)))))
 
 (defun ths--ranking-focus-row (rows index)
   "Reveal INDEX in ROWS and give its row native keyboard focus."
@@ -470,18 +486,29 @@ FORCE allows an explicit category click to move focus from its button."
       (ths--fetch symbol 'quote)
       (ths--ensure-chart))))
 
-(defun ths--volume (volume)
-  "Format VOLUME in lots, never as monetary amount."
-  (cond ((not (numberp volume)) "--")
-        ((>= volume 100000000) (format "%.2f亿手" (/ volume 100000000.0)))
-        ((>= volume 10000) (format "%.2f万手" (/ volume 10000.0)))
-        (t (format "%.0f手" volume))))
+(defun ths--volume (volume &optional unit)
+  "Format VOLUME in UNIT (手 for A shares, 股 for Hong Kong/US), never as money."
+  (let ((unit (or unit "手")))
+    (cond ((not (numberp volume)) "--")
+          ((>= volume 100000000) (format "%.2f亿%s" (/ volume 100000000.0) unit))
+          ((>= volume 10000) (format "%.2f万%s" (/ volume 10000.0) unit))
+          (t (format "%.0f%s" volume unit)))))
+
+(defconst ths--ranking-hk-us-buttons 58
+  "Minimum ranking width in columns that still fits seven universe buttons.
+Measured with ETAF: the five original buttons end at column 42, and adding
+Hong Kong and US (six columns each plus two gaps) pushes the last button to
+column 56.  The frame keeps one column of padding on each side, so 58 columns
+are needed for the tail label to stay fully visible; narrower windows keep the
+original five buttons instead of clipping the last one.")
 
 (defun ths--ranking-columns (columns &optional sort universe)
   "Return table fields for COLUMNS cells, keeping SORT's amount visible.
-UNIVERSE selects the ranking pool the fields describe."
+UNIVERSE selects the ranking pool the fields describe.  Hong Kong and US
+rankings have no float market cap and no 60-day change, so those columns are
+dropped instead of being displayed as empty."
   (cond
-   ((and (< columns 80) (memq universe '(etf lof)))
+   ((and (< columns 80) (memq universe '(etf lof hkstock usstock)))
     (append '((:code "代码" 8) (:name "名称" 10) (:price "最新" 8))
             (list (if (eq sort 'amount) '(:amount "成交额" 13) '(:change "涨跌幅" 10)))))
    ((< columns 80)
@@ -498,7 +525,8 @@ UNIVERSE selects the ranking pool the fields describe."
      (list (if (eq sort 'amount)
                (list :amount "成交额" (if (< columns 90) 12 14))
              (list :volume "成交量" (if (< columns 90) 12 14))))
-     '((:float-cap "流通市值" 11) (:change-60d "60日涨跌幅" 13))
+     (unless (memq universe '(hkstock usstock))
+       '((:float-cap "流通市值" 11) (:change-60d "60日涨跌幅" 13)))
      (when (>= columns 112)
        (list (if (eq sort 'amount) '(:volume "成交量" 12) '(:amount "成交额" 12))
              '(:turnover "换手率" 10)))))))
@@ -514,7 +542,7 @@ UNIVERSE selects the ranking pool the fields describe."
                       (:rank (number-to-string value))
                       (:price (ths-data-format-price stock value))
                       ((or :change :change-60d) (ths--number value "%+.2f%%"))
-                      (:volume (ths--volume value))
+                      (:volume (ths--volume value (ths-data-volume-unit stock)))
                       ((or :amount :float-cap) (ths--amount value))
                       (:turnover (ths--number value "%.2f%%"))
                       (_ (or value "--")))))
@@ -545,15 +573,23 @@ UNIVERSE selects the ranking pool the fields describe."
                        (ths--button 'page-ranking "排行榜 3" #'ths-show-ranking t)))
       (ths--shortcut-hint columns t)
       (etaf-node 'row '(:item-gap (ch 1) :height (lh 1) :overflow hidden)
-                 (list (ths--button 'rank-stock "A股" (lambda () (ths-ranking-set-universe 'stock)) (eq universe 'stock))
-                       (ths--button 'rank-etf "ETF" (lambda () (ths-ranking-set-universe 'etf)) (eq universe 'etf))
-                       (ths--button 'rank-lof "LOF" (lambda () (ths-ranking-set-universe 'lof)) (eq universe 'lof))
-                       (ths--button 'rank-change "涨幅榜 ↓" (lambda () (ths--ranking-select ref 'change)) (eq sort 'change))
-                       (ths--button 'rank-amount "成交额榜 ↓" (lambda () (ths--ranking-select ref 'amount)) (eq sort 'amount))))
+                 (append
+                  (list (ths--button 'rank-stock "A股" (lambda () (ths-ranking-set-universe 'stock)) (eq universe 'stock))
+                        (ths--button 'rank-etf "ETF" (lambda () (ths-ranking-set-universe 'etf)) (eq universe 'etf))
+                        (ths--button 'rank-lof "LOF" (lambda () (ths-ranking-set-universe 'lof)) (eq universe 'lof)))
+                  (when (>= columns ths--ranking-hk-us-buttons)
+                    (list (ths--button 'rank-hkstock "港股" (lambda () (ths-ranking-set-universe 'hkstock)) (eq universe 'hkstock))
+                          (ths--button 'rank-usstock "美股" (lambda () (ths-ranking-set-universe 'usstock)) (eq universe 'usstock))))
+                  (list (ths--button 'rank-change "涨幅榜 ↓" (lambda () (ths--ranking-select ref 'change)) (eq sort 'change))
+                        (ths--button 'rank-amount "成交额榜 ↓" (lambda () (ths--ranking-select ref 'amount)) (eq sort 'amount)))))
       (ths--text (concat (if (eq universe 'stock) "沪深京 A 股" (ths-data-ranking-label universe))
-                         (if (eq sort 'amount) " · 按成交额降序 · 单位：元"
-                           (if (eq universe 'stock) " · 从高到低 · 成交量单位：手（100 股）"
-                             " · 从高到低 · 成交量单位：手（100 份）")))
+                         (cond
+                          ((eq sort 'amount)
+                           (if (memq universe '(hkstock usstock)) " · 按成交额降序"
+                             " · 按成交额降序 · 单位：元"))
+                          ((memq universe '(hkstock usstock)) " · 从高到低 · 成交量单位：股")
+                          ((eq universe 'stock) " · 从高到低 · 成交量单位：手（100 股）")
+                          (t " · 从高到低 · 成交量单位：手（100 份）")))
                  (ths-theme-color 'secondary))
       (ths--text (concat (ths--source (plist-get data :source)) " · "
                          (if stamp (concat "采集时间 " (format-time-string "%F %T" (seconds-to-time stamp) 28800))
@@ -721,6 +757,32 @@ NAME is optional display metadata selected from stock search suggestions."
             (string-trim (read-string "代码 / 名称 / 行业（留空显示全部）: "
                                       (plist-get (etaf-value ref) :query)))))
 
+(defconst ths--watchlist-width 42
+  "Watchlist panel width in columns; its content area is two columns narrower.
+The row builder measures against this budget, so the market label can never
+push the change column outside the panel.")
+
+(defun ths--watchlist-row (stock star)
+  "Return the watchlist line for STOCK prefixed by STAR.
+The market label (沪A / 深基 / 港股 / 美股 …) comes from the market profile
+and is emitted only when the line still fits the panel; otherwise the row
+keeps the label-free layout, so a wide label such as 场外基金 never clips
+the price or change columns."
+  (let* ((code (ths-data-id stock))
+         (label (ths-data-market-label stock))
+         (price (ths-data-format-price stock (plist-get stock :price)))
+         (change (ths--number (ths-data-change stock) "%+.2f%%"))
+         ;; 40 columns of content = 24 fixed columns + code + label + name.
+         (name-width (and label (- (- ths--watchlist-width 2) 24
+                                  (length code) (string-width label)))))
+    (if (and label (>= name-width 3))
+        (format "%s %s %s  %s %8s  %8s" star code label
+                (truncate-string-to-width (plist-get stock :name) name-width 0 ?\s)
+                price change)
+      (format "%s %s  %s %8s  %8s" star code
+              (truncate-string-to-width (plist-get stock :name) 8 0 ?\s)
+              price change))))
+
 (defun ths--watchlist (state ref)
   "Build stock list from STATE, with callbacks updating REF."
   (let* ((stocks (ths--stocks state))
@@ -743,16 +805,13 @@ NAME is optional display metadata selected from stock search suggestions."
                                      (eq (plist-get state :tab) 'favorites))
 			(ths--button 'sort "涨幅 ↓" (lambda () (ths--set ref :sorted (not (plist-get (etaf-value ref) :sorted))))
                                      (plist-get state :sorted))))
-       (ths--text "  代码    名称        最新     涨跌幅" (ths-theme-color 'muted)))
+       (ths--text "  代码 市场 名称     最新     涨跌幅" (ths-theme-color 'muted)))
       (mapcar
        (lambda (stock)
 	 (let* ((code (ths-data-id stock))
 		(selected (equal code (plist-get state :selected)))
-		(label (format "%s %s  %s %8s  %8s"
-                               (if (member code (plist-get state :favorites)) "*" " ")
-                               code (truncate-string-to-width (plist-get stock :name) 8 0 ?\s)
-                               (ths-data-format-price stock (plist-get stock :price))
-                               (ths--number (ths-data-change stock) "%+.2f%%"))))
+		(label (ths--watchlist-row
+                        stock (if (member code (plist-get state :favorites)) "*" " "))))
            (etaf-node 'box
                       (list :ref (intern (concat "stock-" code)) :key code
                             :role 'button :tab-index 0 :height (list 'lh row-height) :overflow 'hidden
@@ -866,11 +925,21 @@ NAME is optional display metadata selected from stock search suggestions."
       (ths--fund-info state)
     (ths--exchange-book state)))
 
+(defun ths--trades-p (stock)
+  "Return non-nil when STOCK's market publishes tick-like trade records.
+Off-exchange funds publish NAV history instead, and Hong Kong/US quotes
+expose no trade records at all, so neither gets an exchange trades panel."
+  (and stock (not (ths-data-otc-p stock))
+       (plist-get (ths-data-market stock) :trades)))
+
 (defun ths--trades (state)
-  "Choose fund history or recent exchange trades for STATE."
-  (if (ths-data-otc-p (ths-data-find (plist-get state :selected)))
-      (ths--fund-history state)
-    (ths--exchange-trades state)))
+  "Choose fund history or recent exchange trades for STATE.
+Markets without trade records fall back to the order book, so no empty or
+invented trades panel is ever rendered."
+  (let ((stock (ths-data-find (plist-get state :selected))))
+    (cond ((ths-data-otc-p stock) (ths--fund-history state))
+          ((ths--trades-p stock) (ths--exchange-trades state))
+          (t (ths--book state)))))
 
 (defun ths--exchange-detail (state ref width)
   "Build quote and chart panel from STATE and REF within WIDTH cells."
@@ -895,8 +964,13 @@ NAME is optional display metadata selected from stock search suggestions."
                              ((plist-get ai-entry :error) (ths-theme-color 'warning))
                              (t (ths-theme-color 'secondary)))))
         (ths--panel
-         (format "%s  %s  /  %s" (plist-get stock :name) (ths-data-id stock)
-                 (plist-get stock :sector))
+         (let ((market-label (ths-data-market-label stock))
+               (currency (plist-get (ths-data-market stock) :currency)))
+           (format "%s  %s  /  %s%s" (plist-get stock :name) (ths-data-id stock)
+                   (plist-get stock :sector)
+                   (if (or market-label currency)
+                       (format "  /  %s" (string-join (delq nil (list market-label currency)) " "))
+                     "")))
          (list
           (etaf-node 'row '(:item-gap (ch 2))
                      (list (ths--text (format "%s  %s  %s" (ths-data-format-price stock (plist-get stock :price))
@@ -915,7 +989,11 @@ NAME is optional display metadata selected from stock search suggestions."
           (etaf-node 'row '(:item-gap (ch 1))
                      (list (ths--button 'intraday "分时" (lambda () (ths--set ref :chart 'intraday)) intraday)
                            (ths--button 'daily "日 K" (lambda () (ths--set ref :chart 'daily)) (not intraday))))
-          (ths--text (if intraday "分时走势  · 蓝色价格 / 黄色均线" "日 K  · 红涨绿跌 / 不复权") (ths-theme-color 'secondary))
+          (ths--text (if intraday (if (ths-chart--average-line-p stock)
+                                      "分时走势  · 蓝色价格 / 黄色均线"
+                                    "分时走势  · 蓝色价格")
+                       "日 K  · 红涨绿跌 / 不复权")
+                     (ths-theme-color 'secondary))
           (etaf-node 'column (list :ref 'chart-region :height (list 'lh chart-rows))
                      (list (cond
                             ((not available) (ths--text (if chart-error "暂无图表数据 · 获取失败，按 r 重试" "暂无图表数据 · 等待获取") (ths-theme-color 'warning)))
@@ -928,7 +1006,7 @@ NAME is optional display metadata selected from stock search suggestions."
                             (t (etaf-node 'column nil
                                           (list (ths--text (if intraday (ths-chart-line stock (- chart-width 10) (1- chart-rows))
                                                              (ths-chart-candles stock (/ (- chart-width 10) 2) (1- chart-rows))))
-                                                (ths--text (if intraday "         09:30               11:30 / 13:00          15:00"
+                                                (ths--text (if intraday (format "         %s" (or (plist-get (ths-data-market stock) :axis-label) ""))
                                                              (let ((candles (ths-data-candles stock (/ (- chart-width 10) 2))))
                                                                (format "         %s — %s" (plist-get (car candles) :date)
                                                                        (plist-get (car (last candles)) :date)))) (ths-theme-color 'muted))))))))
@@ -950,11 +1028,27 @@ NAME is optional display metadata selected from stock search suggestions."
                              (if chart-error " · 更新失败，保留上次数据" "")) (ths-theme-color 'secondary)))
          width 'detail-panel)))))
 
+(defun ths--book-title (stock)
+  "Return the order book panel title for STOCK from its market profile.
+A five-level market keeps the original 五档 wording; single-level markets
+show a bare 盘口 so no missing level is implied."
+  (let* ((market (ths-data-market (if stock (plist-get stock :symbol) "sh000001")))
+         (levels (or (plist-get market :book-levels) 5)))
+    (format "%s盘口 / %s"
+            (if (>= levels 5) "五档" "")
+            (or (plist-get market :volume-unit) "手"))))
+
+(defun ths--book-volume (volume)
+  "Format order book VOLUME, keeping a provider-reported zero as unavailable.
+Hong Kong and US quotes self-report 0 for every level, so printing 0.00 would
+claim an empty queue that was never measured."
+  (if (and (numberp volume) (> volume 0)) (format "%.2f" volume) "--"))
+
 (defun ths--exchange-book (state)
-  "Build the five-level book for STATE."
+  "Build the order book for STATE using the market's own level count."
   (let ((stock (ths-data-find (plist-get state :selected))))
     (ths--panel
-     "五档盘口 / 手"
+     (ths--book-title stock)
      (if (not stock) (list (ths--text "暂无选中股票"))
        (append
         (list (ths--text "档位    价格     数量" (ths-theme-color 'muted)))
@@ -964,7 +1058,7 @@ NAME is optional display metadata selected from stock search suggestions."
                            ;; Box-drawing glyphs can use a wide fallback font.
                            ;; ASCII fits within the panel's content area.
                            (list (ths--text (make-string 20 ?-) (ths-theme-color 'border))))
-                         (list (ths--text (format "%s %9s %7s" label (ths-data-format-price stock price) (ths--number volume "%.2f"))
+                         (list (ths--text (format "%s %9s %7s" label (ths-data-format-price stock price) (ths--book-volume volume))
                                           (if (eq side 'ask) (ths-theme-color 'up) (ths-theme-color 'down))))))
         (list (ths--space (if ths--roomy 1 0))
               (ths--text (if (ths-data-book stock)
@@ -974,13 +1068,17 @@ NAME is optional display metadata selected from stock search suggestions."
      32 'book-panel)))
 
 (defun ths--trade-cells (&optional trade stock)
-  "Build cells for TRADE in STOCK's price precision, or headings when nil."
+  "Build cells for TRADE in STOCK's price precision, or headings when nil.
+The volume heading names STOCK's own unit, so a 股 market never claims 手."
   (let ((side (plist-get trade :side)))
     (mapcar
      (lambda (field)
        (let* ((key (car field)) (width (nth 2 field))
               (value (plist-get trade key))
-              (text (if (not trade) (nth 1 field)
+              (text (if (not trade)
+                        (if (eq key :volume)
+                            (format "量/%s" (or (ths-data-volume-unit stock) "手"))
+                          (nth 1 field))
                       (pcase key
                         (:price (ths-data-format-price stock value))
                         (:volume (if (= value (truncate value)) (format "%.0f" value) (format "%.2f" value)))
@@ -1004,7 +1102,7 @@ NAME is optional display metadata selected from stock search suggestions."
     (ths--panel
      "成交记录 / 分时成交"
      (append
-      (list (etaf-node 'row nil (ths--trade-cells)))
+      (list (etaf-node 'row nil (ths--trade-cells nil stock)))
       (cl-loop for trade in trades for i from 0
                for row-height = (- (/ (* (1+ i) table-rows) (length trades))
                                    (/ (* i table-rows) (length trades)))
@@ -1024,10 +1122,15 @@ NAME is optional display metadata selected from stock search suggestions."
      32 'trades-panel)))
 
 (defun ths--market-sidebar (state)
-  "Stack the order book and recent trades for STATE."
-  (etaf-node 'column '(:width (ch 32) :item-gap (lh 1))
-             (list (let ((ths--panel-rows (ths--book-height))) (ths--book state))
-                   (let ((ths--panel-rows (- ths--panel-rows (ths--book-height) 1))) (ths--trades state)))))
+  "Stack the order book and recent trades for STATE.
+A market without trade records shows the order book alone and lets it use
+the full sidebar height."
+  (let ((stock (ths-data-find (plist-get state :selected))))
+    (etaf-node 'column '(:width (ch 32) :item-gap (lh 1))
+               (if (ths--trades-p stock)
+                   (list (let ((ths--panel-rows (ths--book-height))) (ths--book state))
+                         (let ((ths--panel-rows (- ths--panel-rows (ths--book-height) 1))) (ths--trades state)))
+                 (list (ths--book state))))))
 
 (defun ths--section (section)
   "Show SECTION in a compact window."
@@ -1084,6 +1187,69 @@ NAME is optional display metadata selected from stock search suggestions."
                               (if compact (format "%s %s" (substring (cadr item) 0 1) key) label)
                               (lambda () (ths--shortcut-command key)) nil label compact))) items))))
 
+(defconst ths--index-bar-gap 2
+  "Columns between two index bar entries.")
+
+(defconst ths--index-bar-forms '((price change) (change) ())
+  "Index bar detail forms, richest first: price and change, change, name only.")
+
+(defun ths--index-cells (stock form)
+  "Return STOCK's index bar cells for FORM as (TEXT . COLOR) pairs.
+The name keeps the secondary color and the numeric cell keeps the quote
+color, so the full form renders exactly like the original three indices."
+  (let* ((change (ths-data-change stock))
+         (change-text (ths--number change "%+.2f%%"))
+         (detail (cond ((memq 'price form)
+                        (format "%s %s" (ths--number (plist-get stock :price)) change-text))
+                       ((memq 'change form) change-text))))
+    (append (list (cons (or (plist-get stock :name) "--") (ths-theme-color 'secondary)))
+            (when detail (list (cons detail (ths--color change)))))))
+
+(defun ths--cells-width (cells)
+  "Return the display width of CELLS joined by one column."
+  (if cells (+ (cl-loop for cell in cells sum (string-width (car cell)))
+               (1- (length cells)))
+    0))
+
+(defun ths--index-row-width (rows gap)
+  "Return the display width of ROWS of cells joined by GAP columns."
+  (+ (cl-loop for cells in rows sum (ths--cells-width cells))
+     (* gap (max 0 (1- (length rows))))))
+
+(defun ths--index-bar (columns)
+  "Build the index strip that fits COLUMNS.
+The strip keeps the richest form whose whole set fits and otherwise keeps
+only the leading entries that fit, so a narrow window never shows half an
+entry and never squeezes the panels below."
+  (let* ((available (max 0 (- columns 4)))
+         (rows (mapcar (lambda (stock)
+                         (mapcar (lambda (form) (ths--index-cells stock form))
+                                 ths--index-bar-forms))
+                       ths-data-indices))
+         (gap ths--index-bar-gap)
+         (form-index
+          (or (cl-position-if
+               (lambda (i)
+                 (<= (ths--index-row-width (mapcar (lambda (entry) (nth i entry)) rows) gap)
+                     available))
+               (number-sequence 0 (1- (length ths--index-bar-forms))))
+              ;; No form fits whole: fall back to the poorest one and keep the
+              ;; leading entries, so the strip shows as many indices as fit.
+              (1- (length ths--index-bar-forms))))
+         (used 0) (kept '()))
+    (dolist (entry rows)
+      (let* ((cells (nth form-index entry))
+             (needed (+ (ths--cells-width cells) (if kept gap 0))))
+        (when (<= (+ used needed) available)
+          (cl-incf used needed)
+          (push cells kept))))
+    (etaf-node
+     'row (list :height '(lh 1) :overflow 'hidden :item-gap (list 'ch gap))
+     (mapcar (lambda (cells)
+               (etaf-node 'row '(:height (lh 1) :item-gap (ch 1))
+                          (mapcar (lambda (cell) (ths--text (car cell) (cdr cell))) cells)))
+             (nreverse kept)))))
+
 (defun ths--dashboard (state ref columns rows)
   "Fit STATE and REF in COLUMNS by ROWS, above the window mode line."
   (let* ((height (max 1 (1- rows)))
@@ -1114,18 +1280,7 @@ NAME is optional display metadata selected from stock search suggestions."
                            (ths--button 'page-ranking "排行榜 3" #'ths-show-ranking)
                            (ths--button 'clear-search "清空" (lambda () (ths--set ref :query "")))))
           (ths--shortcut-hint columns nil state)
-          (etaf-node
-           'row '(:height (lh 1) :overflow hidden :item-gap (ch 3))
-           (mapcar
-            (lambda (stock)
-              (let ((change (ths-data-change stock)))
-                (etaf-node
-                 'row '(:height (lh 1) :item-gap (ch 1))
-                 (list (ths--text (plist-get stock :name) (ths-theme-color 'secondary))
-                       (ths--text (format "%s %s" (ths--number (plist-get stock :price))
-                                          (ths--number change "%+.2f%%"))
-                                  (ths--color change))))))
-            ths-data-indices))))
+          (ths--index-bar columns)))
         (etaf-node
          'row (list :ref 'dashboard-body :height (list 'lh ths--panel-rows) :item-gap '(ch 1))
          (if wide

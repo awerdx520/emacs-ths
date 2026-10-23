@@ -31,15 +31,20 @@ Volumes remain in lots; an absent value is distinct from zero."
                          :color (if (>= price reference) (ths-theme-color 'up) (ths-theme-color 'down)))
            do (setq base price)))
 
-(defun ths-chart--volume-svg (bars width left right)
-  "Draw BARS of WIDTH between LEFT and RIGHT below the price panel."
-  (let* ((values (delq nil (mapcar (lambda (bar) (plist-get bar :volume)) bars)))
+(defun ths-chart--volume-unit (stock)
+  "Return STOCK's volume unit label, defaulting to 手 when unavailable."
+  (or (ths-data-volume-unit stock) "手"))
+
+(defun ths-chart--volume-svg (bars width left right &optional unit)
+  "Draw BARS of WIDTH between LEFT and RIGHT below the price panel in UNIT."
+  (let* ((unit (or unit "手"))
+         (values (delq nil (mapcar (lambda (bar) (plist-get bar :volume)) bars)))
          (maximum (if values (apply #'max values) 0))
          (scale (max 1.0 (float maximum))))
     (concat
      "<g id=\"volume-panel\">"
      (format (concat "<path d=\"M%.2f 246 H%.2f M%.2f 294 H%.2f\" stroke=\"" (ths-theme-color 'grid) "\"/>") left right left right)
-     (format (concat "<text x=\"%.2f\" y=\"232\" fill=\"" (ths-theme-color 'secondary) "\">成交量（手） · 最新 %s%s</text>")
+     (format (concat "<text x=\"%.2f\" y=\"232\" fill=\"" (ths-theme-color 'secondary) "\">成交量（" unit "） · 最新 %s%s</text>")
              left (ths-chart--volume-label (plist-get (car (last bars)) :volume))
              (if values "" " · 暂无数据"))
      (format (concat "<text x=\"%.2f\" y=\"250\" text-anchor=\"end\" fill=\"" (ths-theme-color 'muted) "\">%s</text>")
@@ -58,6 +63,68 @@ Volumes remain in lots; an absent value is distinct from zero."
           "")) bars "")
      "</g>")))
 
+(defun ths-chart--span (stock)
+  "Return STOCK's intraday minute span used as the chart divisor.
+The value comes from the market profile so that a Hong Kong session spans
+330 minutes and a US session 390; the A-share 240 minute day and any
+unknown market fall back to 240 to keep the divisor nonzero."
+  (let ((minutes (plist-get (ths-data-market stock) :minutes)))
+    (if (and (numberp minutes) (> minutes 0)) (float minutes) 240.0)))
+
+(defun ths-chart--average-line-p (stock)
+  "Return non-nil when STOCK's market publishes an average price line.
+US lines carry only a cumulative volume, so no average line is drawn;
+an unknown market keeps the historical A-share behaviour."
+  (let ((market (ths-data-market stock)))
+    (if market (and (plist-get market :average-line) t) t)))
+
+(defun ths-chart--clock (minutes)
+  "Return MINUTES after midnight as HH:MM."
+  (format "%02d:%02d" (/ minutes 60) (% minutes 60)))
+
+(defun ths-chart--mid-time (start end)
+  "Return the clock label halfway between HH:MM START and END."
+  (let* ((to-minutes (lambda (text)
+                       (let ((digits (replace-regexp-in-string ":" "" text)))
+                         (+ (* 60 (string-to-number (substring digits 0 2)))
+                            (string-to-number (substring digits 2 4))))))
+         (middle (/ (+ (funcall to-minutes start) (funcall to-minutes end)) 2)))
+    (ths-chart--clock middle)))
+
+(defun ths-chart--axis-labels (stock)
+  "Return the intraday time labels for STOCK from its market profile.
+Each session contributes its start, middle and end; two sessions that meet
+share one label such as `11:30 / 13:00'.  An unknown market falls back to
+the A-share session, and a market without a session (an off-exchange fund)
+returns nil and draws no time axis."
+  (let* ((market (or (ths-data-market stock) ths-data--a-share-profile))
+         (text (plist-get market :axis-label))
+         (times (and text (split-string text "[ \t/]+" t))))
+    (when (and times (cl-evenp (length times)) times)
+      (let* ((sessions (cl-loop for (start end) on times by #'cddr
+                                collect (list start (ths-chart--mid-time start end) end)))
+             (labels (car sessions)))
+        (dolist (session (cdr sessions))
+          (setq labels (append (butlast labels)
+                               (list (format "%s / %s" (car (last labels)) (car session)))
+                               (cdr session))))
+        labels))))
+
+(defun ths-chart--axis-svg (stock left right)
+  "Return STOCK's intraday time label group between LEFT and RIGHT."
+  (let* ((labels (ths-chart--axis-labels stock))
+         (n (length labels)))
+    (concat
+     (format "<g fill=\"%s\" font-size=\"12\">" (ths-theme-color 'axis))
+     (cl-loop for label in labels for i from 0
+              for px = (+ left (if (> n 1) (* (/ (float i) (1- n)) (- right left)) 0))
+              concat (format "<text x=\"%.0f\" y=\"322\"%s>%s</text>" px
+                             (cond ((= i 0) "")
+                                   ((= i (1- n)) " text-anchor=\"end\"")
+                                   (t " text-anchor=\"middle\""))
+                             (xml-escape-string label)))
+     "</g>")))
+
 (defun ths-chart-svg (stock)
   "Return a continuous intraday SVG chart for STOCK.
 Prices and their running arithmetic mean share a symmetric percentage axis.
@@ -66,6 +133,8 @@ The SVG is self-contained; no external files, scripts or fonts are fetched."
     (let* ((points (plist-get stock :points))
            (prices (ths-data-series stock))
            (base (ths-data-chart-base stock))
+           (span (ths-chart--span stock))
+           (average (ths-chart--average-line-p stock))
            (radius (max (* base 0.007)
                         (* 1.15 (apply #'max (mapcar (lambda (p) (abs (- p base))) prices)))))
            (low (- base radius)) (high (+ base radius))
@@ -74,7 +143,9 @@ The SVG is self-contained; no external files, scripts or fonts are fetched."
       (cl-loop for price in prices for i from 1
                do (cl-incf total price) do (push (/ total i) means))
       (cl-labels
-       ((x (point) (+ left (* (/ (plist-get point :slot) 240.0) (- right left))))
+       ((x (point)
+          (+ left (* (min 1.0 (max 0.0 (/ (float (or (plist-get point :slot) 0)) span)))
+                     (- right left))))
         (y (price) (+ top (* (/ (- high price) (- high low)) (- bottom top))))
         (path (values)
           (mapconcat #'identity
@@ -107,17 +178,17 @@ The SVG is self-contained; no external files, scripts or fonts are fetched."
                     collect (format (concat "<path d=\"M%.2f 26 V294\" stroke=\"" (ths-theme-color 'grid) "\" stroke-dasharray=\"2 4\"/>") px)) "")
           (format "<path d=\"%s L%.2f 210 L%.2f 210 Z\" fill=\"url(#area)\"/>"
                   line (x (car (last points))) (x (car points)))
-          (format (concat "<path id=\"mean-line\" d=\"%s\" fill=\"none\" stroke=\"" (ths-theme-color 'warning) "\" stroke-width=\"1.6\" stroke-linejoin=\"round\"/>") (path (nreverse means)))
+          (if average
+              (format (concat "<path id=\"mean-line\" d=\"%s\" fill=\"none\" stroke=\"" (ths-theme-color 'warning) "\" stroke-width=\"1.6\" stroke-linejoin=\"round\"/>") (path (nreverse means)))
+            "")
           (format (concat "<path id=\"price-line\" d=\"%s\" fill=\"none\" stroke=\"" (ths-theme-color 'line) "\" stroke-width=\"2.1\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>") line)
           (format (concat "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"3.2\" fill=\"" (ths-theme-color 'point) "\"/>")
                   (x (car (last points))) (y (car (last prices))))
           (ths-chart--volume-svg
-           (ths-chart--volume-bars points (mapcar #'x points) nil base) 1.8 left right)
-          (concat "<g fill=\"" (ths-theme-color 'axis) "\" font-size=\"12\"><text x=\"68\" y=\"322\">09:30</text>")
-          "<text x=\"212\" y=\"322\" text-anchor=\"middle\">10:30</text>"
-          "<text x=\"356\" y=\"322\" text-anchor=\"middle\">11:30 / 13:00</text>"
-          "<text x=\"500\" y=\"322\" text-anchor=\"middle\">14:00</text>"
-          "<text x=\"644\" y=\"322\" text-anchor=\"end\">15:00</text></g></g></svg>"))))))
+           (ths-chart--volume-bars points (mapcar #'x points) nil base) 1.8 left right
+           (ths-chart--volume-unit stock))
+          (ths-chart--axis-svg stock left right)
+          "</g></svg>"))))))
 
 (defun ths-chart-candles-svg (stock &optional count)
   "Draw STOCK's latest COUNT daily candles in a self-contained SVG.
@@ -172,7 +243,7 @@ Return nil when no candles are available."
                     "</g>")) "")
          (ths-chart--volume-svg
           (ths-chart--volume-bars candles (mapcar #'x (number-sequence 0 (1- n))) t)
-          body-width left right)
+          body-width left right (ths-chart--volume-unit stock))
          (mapconcat
           (lambda (i)
             (format (concat "<text class=\"date-label\" x=\"%.2f\" y=\"322\" text-anchor=\"%s\" fill=\"" (ths-theme-color 'axis) "\">%s</text>")
@@ -199,10 +270,12 @@ Return nil when no candles are available."
                (mapconcat #'identity (aref grid i) "")))
      (number-sequence 0 (1- height)) "\n")))
 
-(defun ths-chart--volume-text (bars width height heading)
+(defun ths-chart--volume-text (bars width height heading &optional unit)
   "Render BARS in WIDTH columns and HEIGHT rows, optionally with HEADING.
-Sum volumes that fall in the same terminal column, retaining its last color."
-  (let ((values (make-vector width nil)) (colors (make-vector width nil)))
+UNIT names the volume unit (手 or 股).  Sum volumes that fall in the same
+terminal column, retaining its last color."
+  (let ((values (make-vector width nil)) (colors (make-vector width nil))
+        (unit (or unit "手")))
     (dolist (bar bars)
       (when-let* ((volume (plist-get bar :volume)))
         (let ((x (plist-get bar :x)))
@@ -215,7 +288,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
        (when heading
          (concat (propertize
                   (truncate-string-to-width
-                   (concat "成交量（手） · 柱峰 " (if known (ths-chart--volume-label maximum) "--"))
+                   (concat "成交量（" unit "） · 柱峰 " (if known (ths-chart--volume-label maximum) "--"))
                    (+ width 10) 0 ?\s)
                   'face `(:foreground ,(ths-theme-color 'muted))) "\n"))
        (mapconcat
@@ -223,7 +296,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
           (concat
            (propertize
             (concat (truncate-string-to-width
-                     (cond ((not heading) "量/手")
+                     (cond ((not heading) (concat "量/" unit))
                            ((= i 0) (ths-chart--volume-label maximum))
                            ((= i (1- height)) "0") (t "")) 8 0 ?\s) " │")
             'face `(:foreground ,(ths-theme-color 'muted)))
@@ -246,29 +319,37 @@ Sum volumes that fall in the same terminal column, retaining its last color."
            (volume-rows (max 1 (/ rows 4))) (heading (>= rows 5))
            (height (- rows volume-rows (if heading 1 0)))
            (points (plist-get stock :points))
+           (span (ths-chart--span stock))
+           (average (ths-chart--average-line-p stock))
            (positions (mapcar (lambda (point)
-                                (min (1- width) (round (* (/ (plist-get point :slot) 240.0) (1- width))))) points))
+                                (min (1- width)
+                                     (max 0 (round (* (/ (float (or (plist-get point :slot) 0)) span)
+                                                      (1- width))))))
+                              points))
            (prices (ths-data-series stock))
            (low (* 0.999 (apply #'min prices)))
            (high (* 1.001 (apply #'max prices)))
            (grid (vconcat (cl-loop repeat height collect (make-vector width " "))))
            (previous nil) (total 0.0))
       (cl-loop for value in prices for point in (plist-get stock :points) for i from 1
-               for x = (min (1- width) (round (* (/ (plist-get point :slot) 240.0) (1- width))))
+               for x = (min (1- width)
+                            (max 0 (round (* (/ (float (or (plist-get point :slot) 0)) span)
+                                             (1- width)))))
                for y = (ths-chart--row value low high height)
                do (cl-incf total value)
                do (when previous
                     (cl-loop for row from (min previous y) to (max previous y)
                              do (aset (aref grid row) x
                                       (propertize "│" 'face (list :foreground (ths-theme-color 'line))))))
-               do (aset (aref grid (ths-chart--row (/ total i) low high height)) x
-                        (propertize "·" 'face (list :foreground (ths-theme-color 'warning))))
+               do (when average
+                    (aset (aref grid (ths-chart--row (/ total i) low high height)) x
+                          (propertize "·" 'face (list :foreground (ths-theme-color 'warning)))))
                do (aset (aref grid y) x (propertize "●" 'face (list :foreground (ths-theme-color 'line))))
                do (setq previous y))
       (concat (ths-chart--render grid low high stock) "\n"
               (ths-chart--volume-text
                (ths-chart--volume-bars points positions nil (ths-data-chart-base stock))
-               width volume-rows heading)))))
+               width volume-rows heading (ths-chart--volume-unit stock))))))
 
 (defun ths-chart-candles (stock &optional count height)
   "Draw COUNT unadjusted candles and their volume within HEIGHT rows."
@@ -292,7 +373,7 @@ Sum volumes that fall in the same terminal column, retaining its last color."
       (concat (ths-chart--render grid low high stock) "\n"
               (ths-chart--volume-text
                (ths-chart--volume-bars candles (number-sequence 0 (* 2 (1- (length candles))) 2) t)
-               (* 2 (length candles)) volume-rows heading)))))
+               (* 2 (length candles)) volume-rows heading (ths-chart--volume-unit stock))))))
 
 (defun ths-chart-nav-rows (stock accumulated)
   "Return STOCK's available NAV rows for ACCUMULATED or unit values."

@@ -31,7 +31,70 @@
   '("sz300033" "sz300750" "sh600519" "sz002594" "sh601318" "sh600036" "sh688981" "sz300059")
   "Stock/fund symbols to show, with market prefixes (of for OTC funds)."
   :type '(repeat string) :group 'ths)
-(defconst ths-data-index-symbols '("sh000001" "sz399001" "sz399006"))
+(defconst ths-data-index-symbols
+  '("sh000001" "sz399001" "sz399006" "hkHSI" "hkHSCEI" "usDJI" "us.IXIC" "us.INX")
+  "Indices shown in the dashboard strip: three A-share, two Hong Kong, three US.
+The strip truncates its tail on narrow windows instead of shrinking entries.")
+(defconst ths-data-markets
+  '(("sh" :prefix "sh" :label "沪A" :fund-label "沪基" :decimals 2 :fund-decimals 3
+     :volume-unit "手" :currency "CNY" :book-levels 5 :minutes 240
+     :segments ((570 . 690) (780 . 900)) :amount-scale 10000.0
+     :axis-label "09:30 11:30 / 13:00 15:00"
+     :secid-prefix "1." :timestamp compact :trades t :average-line t
+     :sina-prefix nil :sina-min-fields 32 :min-fields 39)
+    ("sz" :prefix "sz" :label "深A" :fund-label "深基" :decimals 2 :fund-decimals 3
+     :volume-unit "手" :currency "CNY" :book-levels 5 :minutes 240
+     :segments ((570 . 690) (780 . 900)) :amount-scale 10000.0
+     :axis-label "09:30 11:30 / 13:00 15:00"
+     :secid-prefix "0." :timestamp compact :trades t :average-line t
+     :sina-prefix nil :sina-min-fields 32 :min-fields 39)
+    ("bj" :prefix "bj" :label "京A" :fund-label nil :decimals 2 :fund-decimals 3
+     :volume-unit "手" :currency "CNY" :book-levels 5 :minutes 240
+     :segments ((570 . 690) (780 . 900)) :amount-scale 10000.0
+     :axis-label "09:30 11:30 / 13:00 15:00"
+     :secid-prefix "0." :timestamp compact :trades t :average-line t
+     :sina-prefix nil :sina-min-fields 32 :min-fields 39)
+    ("of" :prefix "of" :label "场外基金" :fund-label nil :decimals 4 :fund-decimals 4
+     :volume-unit nil :currency "CNY" :book-levels 0 :minutes nil :segments nil
+     :amount-scale 1.0 :secid-prefix nil :timestamp nil :trades nil :average-line nil
+     :sina-prefix nil :sina-min-fields nil :min-fields nil)
+    ("hk" :prefix "hk" :label "港股" :index-label "港股指数" :fund-label nil :decimals 3
+     :fund-decimals 3 :volume-unit "股" :currency "HKD" :book-levels 1 :minutes 330
+     :segments ((570 . 720) (780 . 960)) :amount-scale 1.0 :secid-prefix "116."
+     :axis-label "09:30 12:00 / 13:00 16:00"
+     :timestamp hk :trades nil :average-line t
+     :sina-prefix "hk" :sina-min-fields 19 :min-fields 39)
+    ("us" :prefix "us" :label "美股" :index-label "美股指数" :fund-label nil :decimals 2
+     :fund-decimals 2 :volume-unit "股" :currency "USD" :book-levels 1 :minutes 390
+     :segments ((570 . 960)) :amount-scale 1.0 :secid-prefix "105."
+     :axis-label "09:30 16:00"
+     :timestamp us :trades nil :average-line nil
+     :sina-prefix "gb_" :sina-case down :sina-min-fields 36 :min-fields 39))
+  "Market profiles keyed by symbol prefix; the single source of market facts.
+:minutes is the elapsed trading minutes and doubles as the chart scaling
+divisor; :segments lists the intraday sessions as minutes after midnight.
+:amount-scale converts the provider amount field into the market currency;
+:min-fields and :sina-min-fields are provider field-count floors, kept well
+below the observed counts so that added or removed tail fields never turn a
+live quote into an error.  :sina-prefix is the prefix of the Sina list key
+\(nil means the symbol itself) and :sina-case lowers the code when set.
+The Eastmoney secid prefix for US markets is inferred from the search
+response's internal market field (105/106/107) and is not live-verified.")
+
+(defun ths-data--market-symbol (symbol)
+  "Return SYMBOL as a string, accepting a stock plist as well."
+  (if (listp symbol) (plist-get symbol :symbol) symbol))
+
+(defun ths-data-market-key (symbol)
+  "Return SYMBOL's two-letter market prefix, or nil when too short."
+  (let ((value (ths-data--market-symbol symbol)))
+    (and (stringp value) (>= (length value) 2)
+         (downcase (substring value 0 2)))))
+
+(defun ths-data-market (symbol)
+  "Return SYMBOL's market profile plist, or nil when unrecognized."
+  (cdr (assoc (ths-data-market-key symbol) ths-data-markets)))
+
 (defconst ths-data-trades-count 12 "Maximum recent trade records per stock.")
 (defconst ths-data--metadata
   '(("sz300033" "同花顺" "金融科技") ("sz300750" "宁德时代" "电池")
@@ -39,17 +102,35 @@
     ("sh601318" "中国平安" "保险") ("sh600036" "招商银行" "银行")
     ("sh688981" "中芯国际" "半导体") ("sz300059" "东方财富" "证券")
     ("sh000001" "上证指数" "指数") ("sz399001" "深证成指" "指数")
-    ("sz399006" "创业板指" "指数"))
+    ("sz399006" "创业板指" "指数") ("hkHSI" "恒生指数" "指数")
+    ("hkHSCEI" "国企指数" "指数") ("usDJI" "道指" "指数")
+    ("us.IXIC" "纳指" "指数") ("us.INX" "标普500" "指数"))
   "Display names/categories only; these are not market quotes.")
 (defvar-local ths-data-stocks nil "Last successful stock snapshots in this buffer.")
 (defvar-local ths-data-indices nil "Last successful index snapshots in this buffer.")
 
 (defun ths-data-symbol (symbol)
-  "Validate and normalize a market-qualified SYMBOL."
-  (let ((value (downcase (string-trim symbol))))
-    (unless (string-match-p "\\`\\(?:sh\\|sz\\|bj\\|of\\)[0-9]\\{6\\}\\'" value)
-      (error "代码须含市场前缀，例如 sz300033 或 of005827: %s" symbol))
-    value))
+  "Validate and normalize a market-qualified SYMBOL.
+The prefix decides the code format: sh/sz/bj/of take six digits, hk takes
+either five digits with leading zeros kept (`hk00700') or a letter index
+code of at least two letters (`hkHSI', `hkHSCEI'), and us takes a letter
+code that is upcased so that `usaapl' and `usAAPL' name the same stock."
+  (let* ((value (string-trim symbol))
+         (key (and (>= (length value) 2) (downcase (substring value 0 2))))
+         (code (and key (string-trim (substring value 2)))))
+    (cond
+     ((and (member key '("sh" "sz" "bj" "of"))
+           (string-match-p "\\`[0-9]\\{6\\}\\'" code))
+      (downcase value))
+     ((and (equal key "hk") (string-match-p "\\`[0-9]\\{5\\}\\'" code))
+      (concat "hk" code))
+     ((and (equal key "hk") (string-match-p "\\`[A-Za-z]\\{2,\\}\\'" code))
+      (concat "hk" (upcase code)))
+     ((and (equal key "us") (string-match-p "\\`[A-Za-z.]+\\'" code)
+           (string-match-p "[A-Za-z]" code))
+      (concat "us" (upcase code)))
+     (t (error "代码须含市场前缀，例如 sz300033、hk00700 或 usAAPL: %s"
+               symbol)))))
 
 (defun ths-data-otc-p (stock)
   "Return non-nil for an off-exchange fund STOCK."
@@ -72,35 +153,52 @@ This recognizes code ranges, not whether an individual fund is listed."
 
 (defun ths-data-fund-p (stock)
   "Return non-nil when STOCK has an ETF/LOF trading symbol."
-  (let ((symbol (plist-get stock :symbol)))
-    (and (stringp symbol) (= (length symbol) 8)
-         (equal (substring symbol 0 2)
-                (ths-data-fund-market (substring symbol 2))))))
+  (let* ((symbol (plist-get stock :symbol))
+         (key (and (stringp symbol) (ths-data-market-key symbol))))
+    (and (member key '("sh" "sz"))
+         (equal key (ths-data-fund-market (ths-data-symbol-id symbol))))))
 
 (defun ths-data-format-price (stock value &optional signed)
-  "Format VALUE for STOCK: two decimals, three for ETF/LOF, four for OTC.
+  "Format VALUE for STOCK; decimals come from the market profile.
 SIGNED includes a sign for price changes.  Missing values stay unavailable."
   (if (numberp value)
-      (format (if (ths-data-otc-p stock)
-                  (if signed "%+.4f" "%.4f")
-                (if (ths-data-fund-p stock)
-                  (if signed "%+.3f" "%.3f")
-                (if signed "%+.2f" "%.2f")))
-              value)
+      (let* ((market (ths-data-market stock))
+             (decimals (or (and market (if (ths-data-fund-p stock)
+                                           (plist-get market :fund-decimals)
+                                         (plist-get market :decimals)))
+                           2)))
+        (format (format (if signed "%%+.%df" "%%.%df") decimals) value))
     "--"))
+
+(defun ths-data-market-label (stock)
+  "Return STOCK's display market label such as 沪A, 沪基, 港股 or 港股指数.
+The label is a market fact (the profile), so it stays correct for live
+quotes that carry no display metadata of their own."
+  (let* ((symbol (ths-data--market-symbol stock))
+         (market (ths-data-market symbol)))
+    (when market
+      (cond ((and (stringp symbol) (string-prefix-p "of" symbol))
+             (plist-get market :label))
+            ((ths-data-fund-p (list :symbol symbol))
+             (or (plist-get market :fund-label) (plist-get market :label)))
+            ((member symbol ths-data-index-symbols)
+             (or (plist-get market :index-label) (plist-get market :label)))
+            (t (plist-get market :label))))))
+
+(defun ths-data-volume-unit (stock)
+  "Return STOCK's volume unit label (手 or 股), or nil for off-exchange funds."
+  (plist-get (ths-data-market stock) :volume-unit))
 
 (defun ths-data-placeholder (symbol)
   "Return metadata for SYMBOL with no invented quote values."
   (setq symbol (ths-data-symbol symbol))
-  (let ((meta (assoc symbol ths-data--metadata))
-        (fund (ths-data-fund-p (list :symbol symbol)))
-        (otc (string-prefix-p "of" symbol)))
+  (let* ((meta (assoc symbol ths-data--metadata))
+         (fund (ths-data-fund-p (list :symbol symbol)))
+         (otc (string-prefix-p "of" symbol)))
     (list :symbol symbol :code (substring symbol 2)
           :name (or (nth 1 meta) (substring symbol 2))
           :sector (or (nth 2 meta) (cond (otc "场外基金") (fund "场内基金") (t "--")))
-          :market-label (if otc "场外基金" (if fund (if (string-prefix-p "sh" symbol) "沪基" "深基")
-                          (pcase (substring symbol 0 2)
-                            ("sh" "沪A") ("sz" "深A") (_ "京A")))))))
+          :market-label (ths-data-market-label symbol))))
 
 (defun ths-data-change (stock)
   "Return percentage change for STOCK, or nil if unavailable.
@@ -114,15 +212,24 @@ OTC funds use the published return, accounting for dividend distributions."
   "Return stock matching CODE, or nil."
   (seq-find (lambda (stock) (equal code (ths-data-id stock))) ths-data-stocks))
 
+(defun ths-data--filter-field (stock key)
+  "Return STOCK's searchable KEY value, deriving the market label when absent."
+  (if (eq key :market-label)
+      (or (plist-get stock :market-label) (ths-data-market-label stock))
+    (plist-get stock key)))
+
 (defun ths-data-filter (query favorites only-favorites sorted)
-  "Filter stocks by QUERY, FAVORITES, ONLY-FAVORITES and SORTED."
+  "Filter stocks by QUERY, FAVORITES, ONLY-FAVORITES and SORTED.
+QUERY matches the symbol, code, name, sector and market label, so 港股 and
+美股 select their market.  The label is recomputed from the symbol when a
+quote carries no :market-label field of its own."
   (let ((stocks
          (seq-filter
           (lambda (stock)
             (and (or (not only-favorites) (member (ths-data-id stock) favorites))
                  (or (string-empty-p query)
                      (cl-some (lambda (key) (string-match-p (regexp-quote query)
-                                                            (or (plist-get stock key) "")))
+                                                            (or (ths-data--filter-field stock key) "")))
                               '(:symbol :code :name :sector :market-label))))) ths-data-stocks)))
     (if sorted
         (cl-stable-sort (copy-sequence stocks)
@@ -184,51 +291,154 @@ Do not pair a cached older chart with a newer quote's previous close."
     (error "行情响应格式不正确"))
   (split-string (match-string 1 text) separator nil))
 
-(defun ths-data--timestamp (text)
-  "Normalize a provider's compact date/time TEXT."
-  (if (and (stringp text) (string-match-p "\\`[0-9]\\{14\\}\\'" text))
+(defun ths-data--timestamp (text &optional market)
+  "Normalize a provider's quote date/time TEXT for MARKET.
+MARKET is a market profile plist or a symbol string.  A-share stamps are
+compact 14-digit numbers, Hong Kong stamps are slash-separated dates with
+unpadded month/day and an optional seconds field, and US stamps are already
+`YYYY-MM-DD HH:MM:SS'.  Any other shape is returned unchanged so that an
+unexpected provider format never becomes a fabricated time."
+  (let* ((profile (if (stringp market) (ths-data-market market) market))
+         (style (plist-get profile :timestamp)))
+    (cond
+     ((and (eq style 'hk) (stringp text)
+           (string-match
+            (concat "\\`\\([0-9]\\{4\\}\\)/\\([0-9]\\{1,2\\}\\)/\\([0-9]\\{1,2\\}\\)"
+                    " \\([0-9]\\{1,2\\}\\):\\([0-9]\\{1,2\\}\\)"
+                    "\\(?::\\([0-9]\\{1,2\\}\\)\\)?\\'")
+            text))
+      (format "%04d-%02d-%02d %02d:%02d:%02d"
+              (string-to-number (match-string 1 text)) (string-to-number (match-string 2 text))
+              (string-to-number (match-string 3 text)) (string-to-number (match-string 4 text))
+              (string-to-number (match-string 5 text))
+              (string-to-number (or (match-string 6 text) "0"))))
+     ((and (eq style 'us) (stringp text)) text)
+     ((and (stringp text) (string-match-p "\\`[0-9]\\{14\\}\\'" text))
       (format "%s-%s-%s %s:%s:%s" (substring text 0 4) (substring text 4 6)
-              (substring text 6 8) (substring text 8 10) (substring text 10 12) (substring text 12 14))
-    text))
+              (substring text 6 8) (substring text 8 10) (substring text 10 12) (substring text 12 14)))
+     (t text))))
 
-(defun ths-data--book-rows (getter ask-start bid-start volume-first divisor &optional step)
-  "Build book from GETTER at ASK-START/BID-START.
+(defun ths-data--book-rows (getter ask-start bid-start volume-first divisor
+                                   &optional step levels)
+  "Build book from GETTER at ASK-START/BID-START with LEVELS levels each.
 VOLUME-FIRST describes field order; DIVISOR converts quantities to lots.
-STEP is the field-index increment between levels (default 2)."
-  (cl-loop for side in '(ask bid) for start in (list ask-start bid-start)
-           append
-           (cl-loop for level in (if (eq side 'ask) '(5 4 3 2 1) '(1 2 3 4 5))
-                    for i = (+ start (* (or step 2) (1- level)))
-                    collect (list (format "%s%d" (if (eq side 'ask) "卖" "买") level)
-                                  (ths-data--positive (funcall getter (+ i (if volume-first 1 0))))
-                                  (ths-data--scale (funcall getter (+ i (if volume-first 0 1))) divisor)
-                                  side))))
+STEP is the field-index increment between levels (default 2).  LEVELS
+defaults to the five A-share levels; markets that publish a single level
+ask for fewer rows instead of inventing placeholder rows."
+  (let ((count (or levels 5)))
+    (cl-loop for side in '(ask bid) for start in (list ask-start bid-start)
+             append
+             (cl-loop for level in (if (eq side 'ask)
+                                       (number-sequence count 1 -1)
+                                     (number-sequence 1 count))
+                      for i = (+ start (* (or step 2) (1- level)))
+                      collect (list (format "%s%d" (if (eq side 'ask) "卖" "买") level)
+                                    (ths-data--positive (funcall getter (+ i (if volume-first 1 0))))
+                                    (ths-data--scale (funcall getter (+ i (if volume-first 0 1)))
+                                                     divisor)
+                                    side)))))
+
+(defun ths-data--tencent-us-code (raw)
+  "Split Tencent's US code RAW into a cons of code and exchange suffix.
+`AAPL.OQ' yields (\"AAPL\" . \"OQ\"), while the dot-prefixed index codes
+`.IXIC' and `.DJI' are plain codes without an exchange suffix."
+  (let ((text (string-remove-prefix "." (upcase (string-trim (or raw ""))))))
+    (if (string-match "\\`\\([^.]+\\)\\.\\(.+\\)\\'" text)
+        (cons (match-string 1 text) (match-string 2 text))
+      (cons text nil))))
 
 (defun ths-data--quote-tencent (text symbol)
-  "Parse Tencent quote TEXT for SYMBOL."
+  "Parse Tencent quote TEXT for SYMBOL.
+Field positions are shared by the three markets, so the profile supplies
+the field floor, the amount scale, the timestamp style and the number of
+book levels.  A US code carries an exchange suffix (`AAPL.OQ') that is
+returned as :exchange-suffix for the daily K request."
   (let* ((fields (ths-data--fields text (concat "v_" symbol) "~"))
-         (get (lambda (i) (nth i fields))))
-    (unless (and (>= (length fields) 39) (equal (nth 2 fields) (substring symbol 2)))
+         (get (lambda (i) (nth i fields)))
+         (market (ths-data-market symbol))
+         (key (ths-data-market-key symbol))
+         (code (ths-data-symbol-id symbol))
+         (us (and (equal key "us") (ths-data--tencent-us-code (nth 2 fields)))))
+    (unless (>= (length fields) (or (plist-get market :min-fields) 39))
+      (error "腾讯行情字段不足"))
+    (unless (if us
+                (equal (car us) (string-remove-prefix "." code))
+              (equal (upcase (or (nth 2 fields) "")) (upcase code)))
       (error "腾讯行情为空或代码不匹配"))
-    (list :name (nth 1 fields) :price (ths-data--positive (nth 3 fields))
-          :close (ths-data--positive (nth 4 fields)) :open (ths-data--positive (nth 5 fields))
-          :high (ths-data--positive (nth 33 fields)) :low (ths-data--positive (nth 34 fields))
-          :amount (when-let* ((n (ths-data-number (nth 37 fields)))) (* n 10000.0))
-          :turnover (ths-data-number (nth 38 fields))
-          :time (ths-data--timestamp (nth 30 fields))
-          :book (ths-data--book-rows get 19 9 nil 1))))
+    (append
+     (list :name (nth 1 fields) :price (ths-data--positive (nth 3 fields))
+           :close (ths-data--positive (nth 4 fields)) :open (ths-data--positive (nth 5 fields))
+           :high (ths-data--positive (nth 33 fields)) :low (ths-data--positive (nth 34 fields))
+           :amount (when-let* ((n (ths-data-number (nth 37 fields))))
+                     (* n (or (plist-get market :amount-scale) 1.0)))
+           :turnover (ths-data-number (nth 38 fields))
+           :time (ths-data--timestamp (nth 30 fields) market)
+           :book (ths-data--book-rows get 19 9 nil 1 2 (plist-get market :book-levels)))
+     (when (equal key "us") (list :exchange-suffix (cdr us))))))
+
+(defun ths-data--sina-key (symbol)
+  "Return SYMBOL's Sina list key from the market profile.
+A nil :sina-prefix means the symbol is already the key; otherwise the
+prefix is prepended to the code, lowered when :sina-case says so."
+  (let* ((market (ths-data-market symbol))
+         (prefix (plist-get market :sina-prefix))
+         (code (or (ths-data-symbol-id symbol) "")))
+    (if (null prefix)
+        symbol
+      (concat prefix (if (eq (plist-get market :sina-case) 'down)
+                         (downcase code) code)))))
 
 (defun ths-data--quote-sina (text symbol)
-  "Parse Sina quote TEXT for SYMBOL; share quantities become lots."
-  (let* ((fields (ths-data--fields text (concat "hq_str_" symbol) ","))
+  "Parse Sina quote TEXT for SYMBOL; share quantities become lots.
+The list key prefix and the field floor come from the market profile."
+  (let* ((market (ths-data-market symbol))
+         (fields (ths-data--fields text (concat "hq_str_" (ths-data--sina-key symbol)) ","))
          (get (lambda (i) (nth i fields))))
-    (unless (>= (length fields) 32) (error "新浪行情为空"))
+    (unless (>= (length fields) (or (plist-get market :sina-min-fields) 32))
+      (error "新浪行情为空"))
     (list :name (nth 0 fields) :price (ths-data--positive (nth 3 fields))
           :close (ths-data--positive (nth 2 fields)) :open (ths-data--positive (nth 1 fields))
           :high (ths-data--positive (nth 4 fields)) :low (ths-data--positive (nth 5 fields))
           :amount (ths-data-number (nth 9 fields)) :turnover nil
           :time (concat (nth 30 fields) " " (nth 31 fields))
           :book (ths-data--book-rows get 20 10 t 100))))
+
+(defun ths-data--quote-sina-hk (text symbol)
+  "Parse Sina's Hong Kong quote TEXT for SYMBOL.
+The response holds nineteen comma fields: English name, Chinese name, open,
+previous close, high, low, price, change, change percent, bid, ask, amount,
+volume, then the date and the time.  This source publishes no bid or ask
+size, so both quantities stay nil instead of a fabricated zero."
+  (let* ((fields (ths-data--fields text (concat "hq_str_" (ths-data--sina-key symbol)) ","))
+         (name (or (nth 1 fields) "")))
+    (unless (>= (length fields) 19) (error "新浪港股行情为空"))
+    (unless (not (string-empty-p (string-trim name))) (error "新浪港股行情缺少名称"))
+    (list :name name :price (ths-data--positive (nth 6 fields))
+          :close (ths-data--positive (nth 3 fields)) :open (ths-data--positive (nth 2 fields))
+          :high (ths-data--positive (nth 4 fields)) :low (ths-data--positive (nth 5 fields))
+          :amount (ths-data-number (nth 11 fields)) :turnover nil
+          :time (ths-data--timestamp (concat (nth 17 fields) " " (nth 18 fields))
+                                     (ths-data-market symbol))
+          :book (list (list "卖1" (ths-data--positive (nth 10 fields)) nil 'ask)
+                      (list "买1" (ths-data--positive (nth 9 fields)) nil 'bid)))))
+
+(defun ths-data--quote-sina-us (text symbol)
+  "Parse Sina's US quote TEXT for SYMBOL.
+The response holds thirty-six comma fields: name, price, change percent,
+session date and time, change, open, high, low, then volume at f10, the
+previous close at f26 and the traded amount at f30.  f26 is checked against
+price minus change, which is how the provider itself reports the close.
+This source publishes no order book, so :book stays nil."
+  (let* ((fields (ths-data--fields text (concat "hq_str_" (ths-data--sina-key symbol)) ","))
+         (name (or (nth 0 fields) "")))
+    (unless (>= (length fields) 36) (error "新浪美股行情为空"))
+    (unless (not (string-empty-p (string-trim name))) (error "新浪美股行情缺少名称"))
+    (list :name name :price (ths-data--positive (nth 1 fields))
+          :close (ths-data--positive (nth 26 fields)) :open (ths-data--positive (nth 5 fields))
+          :high (ths-data--positive (nth 6 fields)) :low (ths-data--positive (nth 7 fields))
+          :amount (ths-data-number (nth 30 fields)) :turnover nil
+          :time (ths-data--timestamp (nth 3 fields) (ths-data-market symbol))
+          :book nil)))
 
 (defun ths-data--quote-eastmoney (text symbol)
   "Parse Eastmoney quote TEXT for SYMBOL (fltt=2, prices in yuan)."
@@ -245,28 +455,48 @@ STEP is the field-index increment between levels (default 2)."
           ;; bid1=f19, bid5=f11.  Quantities are already lots.
           :book (ths-data--book-rows get 39 19 nil 1 -2))))
 
-(defun ths-data-minute-slot (time)
-  "Map HH:MM or HHMM TIME to trading minutes since 09:30, excluding lunch."
-  (let ((digits (replace-regexp-in-string ":" "" time)))
+(defconst ths-data--a-share-profile (ths-data-market "sh000001")
+  "A-share market profile used when no market is given to a slot lookup.")
+
+(defun ths-data-minute-slot (time &optional market)
+  "Map HH:MM or HHMM TIME to elapsed trading minutes for MARKET.
+MARKET is a market profile plist or a symbol string; nil means the A-share
+profile.  Every session in the profile's :segments contributes its own
+length, so a lunch break is excluded instead of being counted: 15:00 is
+minute 240 in Shanghai and 16:00 is minute 330 in Hong Kong.  A time that
+falls outside every session is an error rather than a clamped slot."
+  (let* ((profile (cond ((stringp market) (ths-data-market market))
+                        ((consp market) market)
+                        (t ths-data--a-share-profile)))
+         (segments (plist-get profile :segments))
+         (digits (replace-regexp-in-string ":" "" time)))
     (unless (string-match-p "\\`[0-9]\\{4\\}\\'" digits) (error "无效分时时间: %s" time))
     (when (> (string-to-number (substring digits 2 4)) 59)
       (error "无效分时时间: %s" time))
-    (let ((m (+ (* 60 (string-to-number (substring digits 0 2)))
-                (string-to-number (substring digits 2 4)))))
-      (cond ((<= 570 m 690) (- m 570))
-            ((<= 780 m 900) (+ 120 (- m 780)))
-            (t (error "非连续竞价时段: %s" time))))))
+    (let* ((m (+ (* 60 (string-to-number (substring digits 0 2)))
+                 (string-to-number (substring digits 2 4))))
+           (slot (cl-block found
+                   (let ((elapsed 0))
+                     (dolist (segment segments)
+                       (let ((start (car segment)) (end (cdr segment)))
+                         (cond ((< m start) (cl-return-from found nil))
+                               ((<= m end) (cl-return-from found (+ elapsed (- m start))))
+                               (t (cl-incf elapsed (- end start))))))
+                     nil))))
+      (or slot (error "非连续竞价时段: %s" time)))))
 
 (defun ths-data--volume (value)
   "Return nonnegative VALUE in lots, preserving missing volume as nil."
   (when-let* ((number (ths-data-number value)))
     (when (>= number 0) number)))
 
-(defun ths-data--point (time price &optional volume)
-  "Return a valid intraday point from TIME, PRICE and VOLUME in lots."
+(defun ths-data--point (time price &optional volume market)
+  "Return a valid intraday point from TIME, PRICE, VOLUME and MARKET.
+MARKET is passed through to `ths-data-minute-slot' so that the slot follows
+the symbol's own session, not a fixed 240 minute A-share day."
   (when-let* ((n (ths-data--positive price)))
     (condition-case nil
-        (list :time time :slot (ths-data-minute-slot time) :price n
+        (list :time time :slot (ths-data-minute-slot time market) :price n
               :volume (ths-data--volume volume))
       (error nil))))
 
@@ -292,50 +522,137 @@ counter decreases have unknown minute volume, rather than a made-up zero."
         (setq previous total previous-slot slot))))
   points)
 
+(defun ths-data--node (root symbol)
+  "Return ROOT's `data' node for SYMBOL, tolerating an exchange suffix.
+Tencent answers a US daily request under the suffixed key `usAAPL.OQ' while
+the caller only knows `usAAPL', so a dotted key whose prefix is the symbol
+is accepted; every other market keys the node by the symbol itself."
+  (let ((data (ths-data--get root "data")))
+    (or (alist-get (intern symbol) data)
+        (cdr (seq-find (lambda (pair)
+                         (string-prefix-p (concat symbol ".")
+                                          (symbol-name (car pair))))
+                       data)))))
+
+(defun ths-data--tencent-candles (data symbol)
+  "Return Tencent's daily rows from DATA for SYMBOL.
+A `qfq' request names the array `qfqday' for some markets and `day' for
+others (measured 2026-10-22: US returns qfqday, Hong Kong and the A-share
+unadjusted request return day), so both keys are read in that order."
+  (if (member (ths-data-market-key symbol) '("hk" "us"))
+      (or (ths-data--get data "qfqday") (ths-data--get data "day"))
+    (ths-data--get data "day")))
+
+(defun ths-data--sina-daily-body (text)
+  "Return the JSON array inside Sina's daily-K JSONP TEXT.
+The payload is `var _<CODE>_MinK=([...]);' behind a leading block comment."
+  (let* ((body (ths-data--sina-json-body text))
+         (open (string-match "(" body))
+         (close (and open (string-match ")\\;?[ \t\r\n]*\\'" body))))
+    (unless (and open close (> close (1+ open))) (error "日 K 响应格式不正确"))
+    (substring body (1+ open) close)))
+
+(defun ths-data--sina-daily (text count)
+  "Parse Sina's US daily-K JSONP TEXT, keeping the latest COUNT candles.
+Each record is an object with date `d', open `o', high `h', low `l', close
+`c' and volume `v'; the full history is returned by the provider, so only
+the tail is kept."
+  (let ((rows (ths-data--json (ths-data--sina-daily-body text)))
+        (candles nil))
+    (dolist (row rows)
+      (when-let* ((candle (ths-data--candle (alist-get 'd row) (alist-get 'o row)
+                                            (alist-get 'c row) (alist-get 'h row)
+                                            (alist-get 'l row) (alist-get 'v row))))
+        (push candle candles)))
+    (unless candles (error "暂无日 K 数据"))
+    (list :candles (last (nreverse candles) count))))
+
 (defun ths-data--chart (text symbol provider kind)
-  "Parse chart TEXT for SYMBOL from PROVIDER of KIND."
-  (let* ((root (ths-data--json text))
-         (data (if (eq provider 'tencent) (ths-data--get root "data" symbol)
-                 (ths-data--get root "data")))
-         points candles date)
-    (if (eq kind 'intraday)
-        (if (eq provider 'tencent)
-            (progn
-              (setq date (ths-data--get data "data" "date"))
-              (dolist (row (ths-data--get data "data" "data"))
-                (let ((f (split-string row " " t)))
-                  (when-let* ((point (ths-data--point (nth 0 f) (nth 1 f) (nth 2 f)))) (push point points)))))
-          (dolist (row (ths-data--get data "trends"))
-            (let* ((f (split-string row ",")) (stamp (split-string (car f) " ")))
-              (setq date (car stamp))
-              (when-let* ((point (ths-data--point (cadr stamp) (nth 2 f) (nth 5 f)))) (push point points)))))
-      (dolist (row (ths-data--get data (if (eq provider 'tencent) "day" "klines")))
-        (let* ((f (if (stringp row) (split-string row ",") row))
-               (candle (apply #'ths-data--candle (seq-take f 6))))
-          (when candle (push candle candles)))))
-    (if (eq kind 'intraday)
-        (progn
-          (unless (and points (stringp date)) (error "暂无分时数据"))
-          (when (string-match-p "\\`[0-9]\\{8\\}\\'" date)
-            (setq date (format "%s-%s-%s" (substring date 0 4) (substring date 4 6) (substring date 6 8))))
-          (setq points (nreverse points))
-          (when (eq provider 'tencent) (ths-data--minute-volumes points))
-          (list :points points :intraday-date date
-                :intraday-close (ths-data--positive
-                                 (if (eq provider 'tencent)
-                                     (nth 4 (ths-data--get data "qt" symbol))
-                                   (ths-data--get data "preClose")))))
-      (unless candles (error "暂无日 K 数据"))
-      (list :candles (nreverse candles)))))
+  "Parse chart TEXT for SYMBOL from PROVIDER of KIND.
+Intraday rows keep the provider's own columns: A-share and Hong Kong lines
+carry `HHMM price cumulative volume cumulative amount' while US lines carry
+`HHMM price cumulative volume'.  The minute slot comes from the symbol's
+market profile, never from a fixed A-share session."
+  (if (and (eq kind 'daily) (eq provider 'sina))
+      (ths-data--sina-daily text 120)
+    (let* ((root (ths-data--json text))
+           (market (ths-data-market symbol))
+           (data (if (eq provider 'tencent) (ths-data--node root symbol)
+                   (ths-data--get root "data")))
+           points candles date)
+      (if (eq kind 'intraday)
+          (if (eq provider 'tencent)
+              (progn
+                (setq date (ths-data--get data "data" "date"))
+                (dolist (row (ths-data--get data "data" "data"))
+                  (let ((f (split-string row " " t)))
+                    (when-let* ((point (ths-data--point (nth 0 f) (nth 1 f) (nth 2 f) market)))
+                      (push point points)))))
+            (dolist (row (ths-data--get data "trends"))
+              (let* ((f (split-string row ",")) (stamp (split-string (car f) " ")))
+                (setq date (car stamp))
+                (when-let* ((point (ths-data--point (cadr stamp) (nth 2 f) (nth 5 f)))) (push point points)))))
+        (dolist (row (if (eq provider 'tencent)
+                         (ths-data--tencent-candles data symbol)
+                       (ths-data--get data "klines")))
+          (let* ((f (if (stringp row) (split-string row ",") row))
+                 (candle (apply #'ths-data--candle (seq-take f 6))))
+            (when candle (push candle candles)))))
+      (if (eq kind 'intraday)
+          (progn
+            (unless (and points (stringp date)) (error "暂无分时数据"))
+            (when (string-match-p "\\`[0-9]\\{8\\}\\'" date)
+              (setq date (format "%s-%s-%s" (substring date 0 4) (substring date 4 6) (substring date 6 8))))
+            (setq points (nreverse points))
+            (when (eq provider 'tencent) (ths-data--minute-volumes points))
+            (list :points points :intraday-date date
+                  :intraday-close (ths-data--positive
+                                   (if (eq provider 'tencent)
+                                       (nth 4 (ths-data--get data "qt" symbol))
+                                     (ths-data--get data "preClose")))))
+        (unless candles (error "暂无日 K 数据"))
+        (list :candles (nreverse candles))))))
+
+(defun ths-data--exchange-suffix (symbol)
+  "Return SYMBOL's Tencent exchange suffix from the last quote, or nil.
+Only US codes carry one (`AAPL' → `OQ'), and it is recorded by the quote
+parser because the daily request needs `usAAPL.OQ'.  A market whose quote
+has not arrived yet has no suffix, and the caller must then avoid the
+Tencent daily endpoint instead of building a suffix-less URL."
+  (plist-get (ths-data-find (ths-data-symbol-id symbol)) :exchange-suffix))
 
 (defun ths-data--url (provider kind symbol)
-  "Build a public HTTPS endpoint for PROVIDER, KIND and SYMBOL."
-  (let ((secid (concat (if (string-prefix-p "sh" symbol) "1." "0.") (substring symbol 2))))
+  "Build a public HTTPS endpoint for PROVIDER, KIND and SYMBOL.
+The Eastmoney secid prefix comes from the market profile; US markets reuse
+the 105/106/107 family that the search response reports internally.
+Intraday and daily endpoints are chosen per market: US intraday uses
+`usMinute' and US daily uses `usfqkline' with the exchange suffix, Hong Kong
+daily uses `fqkline' with `qfq', and A-shares keep their unadjusted request."
+  (let* ((market (ths-data-market symbol))
+         (key (ths-data-market-key symbol))
+         (secid (concat (or (plist-get market :secid-prefix)
+                            (if (string-prefix-p "sh" symbol) "1." "0."))
+                        (substring symbol 2))))
     (pcase (list provider kind)
       (`(tencent quote) (concat "https://qt.gtimg.cn/q=" symbol))
-      (`(sina quote) (concat "https://hq.sinajs.cn/list=" symbol))
-      (`(tencent intraday) (concat "https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=" symbol))
-      (`(tencent daily) (concat "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=" symbol ",day,,,120,"))
+      (`(sina quote) (concat "https://hq.sinajs.cn/list=" (ths-data--sina-key symbol)))
+      (`(tencent intraday)
+       (concat "https://web.ifzq.gtimg.cn/appstock/app/"
+               (if (equal key "us") "usMinute" "minute") "/query?code=" symbol))
+      (`(tencent daily)
+       (pcase key
+         ("hk" (concat "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
+                       symbol ",day,,,120,qfq"))
+         ("us" (let ((suffix (ths-data--exchange-suffix symbol)))
+                 (unless suffix (error "缺少交易所后缀: %s" symbol))
+                 (concat "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get?param="
+                         symbol "." suffix ",day,,,120,qfq")))
+         (_ (concat "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param="
+                    symbol ",day,,,120,"))))
+      (`(sina daily)
+       (let ((code (upcase (ths-data-symbol-id symbol))))
+         (concat "https://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20_"
+                 code "_MinK=/US_MinKService.getDailyK?symbol=" code "&___qn=3")))
       (`(eastmoney quote)
        (concat "https://push2.eastmoney.com/api/qt/stock/get?secid=" secid
                "&fltt=2&invt=2&fields=f43,f44,f45,f46,f48,f57,f58,f60,f86,f168,f530,"
@@ -438,57 +755,98 @@ Return a cancellation function.  Curl handles HTTP errors and total timeout."
       (when (buffer-live-p buffer) (kill-buffer buffer)))))
 
 (defun ths-data--parse (text symbol provider kind)
-  "Parse and validate TEXT for SYMBOL from PROVIDER of KIND."
+  "Parse and validate TEXT for SYMBOL from PROVIDER of KIND.
+Quote parsing depends on the pair of provider and market: the same Sina
+endpoint answers with three different field layouts."
   (cond
    ((eq kind 'trades) (ths-data--trades text symbol))
    ((eq kind 'quote)
-      (let ((quote (funcall (pcase provider
-                              ('tencent #'ths-data--quote-tencent)
-                              ('sina #'ths-data--quote-sina)
-                              ('eastmoney #'ths-data--quote-eastmoney)) text symbol)))
-        (unless (and (plist-get quote :close)
-                     (not (string-empty-p (or (plist-get quote :name) ""))))
-          (error "报价缺少有效昨收或名称"))
-        quote))
+    (let* ((key (ths-data-market-key symbol))
+           (quote (funcall
+                   (pcase (cons provider key)
+                     (`(sina . "hk") #'ths-data--quote-sina-hk)
+                     (`(sina . "us") #'ths-data--quote-sina-us)
+                     (`(sina . ,_) #'ths-data--quote-sina)
+                     (`(tencent . ,_) #'ths-data--quote-tencent)
+                     (`(eastmoney . ,_) #'ths-data--quote-eastmoney)
+                     (_ (error "不支持的数据源: %s" provider)))
+                   text symbol)))
+      (unless (and (plist-get quote :close)
+                   (not (string-empty-p (or (plist-get quote :name) ""))))
+        (error "报价缺少有效昨收或名称"))
+      quote))
    (t (ths-data--chart text symbol provider kind))))
+
+(defun ths-data--providers (symbol kind)
+  "Return the provider fallback order for SYMBOL and KIND.
+A-share quotes keep the configured order; Hong Kong and US quotes prefer
+Tencent, then Sina, then Eastmoney.  Hong Kong charts are Tencent-only and
+US daily candles fall back to Sina while US intraday stays Tencent-only.
+A US daily request without a recorded exchange suffix skips Tencent
+entirely: the suffix-less `usfqkline' request returns two broken rows and
+would poison the cache.  Trades are always Eastmoney, and the caller
+refuses the request before any URL is built when the market profile has no
+trades."
+  (let ((key (ths-data-market-key symbol)))
+    (cond
+     ((eq kind 'trades) '(eastmoney))
+     ((memq kind '(intraday daily))
+      (pcase key
+        ("hk" '(tencent))
+        ("us" (if (not (eq kind 'daily))
+                  '(tencent)
+                (if (ths-data--exchange-suffix symbol) '(tencent sina) '(sina))))
+        (_ (seq-filter (lambda (provider) (not (eq provider 'sina)))
+                       ths-data-providers))))
+     ((member key '("hk" "us")) '(tencent sina eastmoney))
+     (t ths-data-providers))))
 
 (defun ths-data-fetch (symbol kind callback)
   "Fetch SYMBOL's KIND with fallback; CALLBACK receives a plist and error.
 KIND is quote, intraday, daily or trades.  Return a cancellation function.
-A failed provider never replaces cached data with invented values."
+The provider order comes from the market profile; a market without exchange
+trade prints never issues a trades request at all.  A failed provider never
+replaces cached data with invented values."
   (setq symbol (ths-data-symbol symbol))
-  (if (string-prefix-p "of" symbol)
-      (ths-data--fund-fetch symbol kind callback)
-    (let ((providers (if (eq kind 'trades) '(eastmoney)
-                    (seq-filter (lambda (p) (or (eq kind 'quote) (not (eq p 'sina))))
-                                ths-data-providers)))
-        (generation 0) cancel cancelled errors)
-    (cl-labels
-     ((next ()
-        (unless cancelled
-          (if (null providers)
-              (funcall callback nil (if errors (mapconcat #'identity (nreverse errors) "; ")
-                                      "未配置可用数据源"))
-            (let* ((provider (pop providers))
-                   (request-id (cl-incf generation))
-                   (handle
-                    (ths-data--http
-                     (ths-data--url provider kind symbol) provider
-                     (lambda (text failure)
-                       (unless cancelled
-                         (let (result)
-                           (unless failure
-                             (condition-case err
-                                 (setq result (ths-data--parse text symbol provider kind))
-                               (error (setq failure (error-message-string err)))))
-                           (if failure
-                               (progn (push (format "%s: %s" provider failure) errors) (next))
-                             (funcall callback
-                                      (append result (list :source provider :fetched-at (float-time))) nil))))))))
-              ;; A synchronous failure may already have started a fallback.
-              (when (= request-id generation) (setq cancel handle)))))))
-     (next))
-    (lambda () (setq cancelled t) (when cancel (funcall cancel))))))
+  (cond
+   ((string-prefix-p "of" symbol)
+    (ths-data--fund-fetch symbol kind callback))
+   ((and (eq kind 'trades) (not (plist-get (ths-data-market symbol) :trades)))
+    (funcall callback nil "该市场不提供成交明细")
+    #'ignore)
+   (t
+    (let ((providers (ths-data--providers symbol kind))
+          (generation 0) cancel cancelled errors)
+      (cl-labels
+          ((next ()
+             (unless cancelled
+               (if (null providers)
+                   (funcall callback nil
+                            (if errors (mapconcat #'identity (nreverse errors) "; ")
+                              "未配置可用数据源"))
+                 (let* ((provider (pop providers))
+                        (request-id (cl-incf generation))
+                        (handle
+                         (ths-data--http
+                          (ths-data--url provider kind symbol) provider
+                          (lambda (text failure)
+                            (unless cancelled
+                              (let (result)
+                                (unless failure
+                                  (condition-case err
+                                      (setq result (ths-data--parse text symbol provider kind))
+                                    (error (setq failure (error-message-string err)))))
+                                (if failure
+                                    (progn (push (format "%s: %s" provider failure) errors)
+                                           (next))
+                                  (funcall callback
+                                           (append result (list :source provider
+                                                                :fetched-at (float-time)))
+                                           nil))))))))
+                   ;; A synchronous failure may already have started a fallback.
+                   (when (= request-id generation) (setq cancel handle)))))))
+        (next))
+      (lambda () (setq cancelled t) (when cancel (funcall cancel)))))))
 
 (defconst ths-data-ranking-page-size 20
   "Number of securities per market ranking page.")
@@ -497,44 +855,62 @@ A failed provider never replaces cached data with invented values."
 
 (defun ths-data-ranking-universe (universe)
   "Validate UNIVERSE, defaulting nil to the A-share universe."
-  (unless (memq universe '(nil stock etf lof))
+  (unless (memq universe '(nil stock etf lof hkstock usstock))
     (error "无效排行类别: %s" universe))
   (or universe 'stock))
 
 (defun ths-data-ranking-label (universe)
   "Return the display label for ranking UNIVERSE."
   (pcase (ths-data-ranking-universe universe)
-    ('stock "A 股") ('etf "ETF") ('lof "LOF")))
+    ('stock "A 股") ('etf "ETF") ('lof "LOF")
+    ('hkstock "港股") ('usstock "美股")))
 
 (defun ths-data--ranking-stock-symbol (code market)
   "Return the A-share symbol for CODE and Eastmoney MARKET, or nil.
 Check the market together with the trading code: 1.000001 is an index,
-whereas 0.000001 is a stock.  Fund, bond and index ranges are excluded."
-  (when (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
+whereas 0.000001 is a stock.  Fund, bond and index ranges are excluded.
+Eastmoney files Hong Kong stocks under market 116 with five-digit codes,
+so those map to the hk prefix while keeping their leading zeros."
+  (cond
+   ((and (eq market 116) (stringp code) (string-match-p "\\`[0-9]\\{5\\}\\'" code))
+    (concat "hk" code))
+   ((and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
     (cond
      ((and (eq market 1) (string-match-p "\\`\\(?:60\\|68\\)" code)) (concat "sh" code))
      ((and (eq market 0) (string-match-p "\\`\\(?:00[0-4]\\|30\\)" code)) (concat "sz" code))
-     ((and (eq market 0) (string-match-p "\\`\\(?:43\\|83\\|87\\|920\\)" code)) (concat "bj" code)))))
+     ((and (eq market 0) (string-match-p "\\`\\(?:43\\|83\\|87\\|920\\)" code)) (concat "bj" code))))))
 
 (defun ths-data--ranking-symbol (code market &optional universe)
-  "Return CODE's symbol in MARKET only when it belongs to UNIVERSE."
+  "Return CODE's symbol in MARKET only when it belongs to UNIVERSE.
+Hong Kong codes are five digits with leading zeros and US codes are letters
+with an optional dot, normalized to upper case."
   (setq universe (ths-data-ranking-universe universe))
-  (if (eq universe 'stock) (ths-data--ranking-stock-symbol code market)
-    (when (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
-      (cond
-       ((and (eq market 1)
-             (string-match-p (if (eq universe 'etf) "\\`5[123568]" "\\`50[126]") code))
-        (concat "sh" code))
-       ((and (eq market 0)
-             (string-prefix-p (if (eq universe 'etf) "15" "16") code))
-        (concat "sz" code))))))
+  (pcase universe
+    ('stock (ths-data--ranking-stock-symbol code market))
+    ('hkstock (when (and (stringp code) (string-match-p "\\`[0-9]\\{5\\}\\'" code))
+                (concat "hk" code)))
+    ('usstock (when (and (stringp code) (string-match-p "\\`[.A-Za-z]+\\'" code)
+                         (string-match-p "[A-Za-z]" code))
+                (concat "us" (upcase code))))
+    (_ (when (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code))
+         (cond
+          ((and (eq market 1)
+                (string-match-p (if (eq universe 'etf) "\\`5[123568]" "\\`50[126]") code))
+           (concat "sh" code))
+          ((and (eq market 0)
+                (string-prefix-p (if (eq universe 'etf) "15" "16") code))
+           (concat "sz" code)))))))
 
 (defun ths-data--ranking-url (sort page &optional fallback universe)
   "Return Eastmoney's UNIVERSE ranking URL for SORT and PAGE.
-Use the alternate node when FALLBACK is non-nil."
+Use the alternate node when FALLBACK is non-nil.  Eastmoney serves no
+Hong Kong or US ranking node, so those universes fail before any request
+instead of waiting for a timeout."
   (setq universe (ths-data-ranking-universe universe))
   (unless (and (memq sort '(change amount)) (integerp page) (> page 0))
     (error "无效排行参数: %s / %s" sort page))
+  (when (memq universe '(hkstock usstock))
+    (error "东财不提供港美排行榜: %s" universe))
   (concat (if fallback "https://push2.eastmoney.com/api/qt/clist/get"
             (pcase universe
               ('stock "https://82.push2.eastmoney.com/api/qt/clist/get")
@@ -606,19 +982,34 @@ The 60-day change (f24) is already a percentage.  Missing values remain nil."
                               (format-time-string "%F %T" (seconds-to-time stamp) 28800))))))))
 
 (defun ths-data--ranking-sina-url (sort page &optional count universe)
-  "Return Sina's UNIVERSE URL for SORT and PAGE, or COUNT endpoint."
+  "Return Sina's UNIVERSE URL for SORT and PAGE, or COUNT endpoint.
+Hong Kong uses the bare-array market center service and its own count
+endpoint; US uses the JSONP category service whose payload carries the
+total, so COUNT is ignored there and no separate count request is made."
   (setq universe (ths-data-ranking-universe universe))
   (unless (and (memq sort '(change amount)) (integerp page) (> page 0))
     (error "无效排行参数: %s / %s" sort page))
-  (let ((node (pcase universe ('stock "hs_a") ('etf "etf_hq_fund") ('lof "lof_hq_fund"))))
-    (concat "https://vip.stock.finance.sina.com.cn/quotes_service/api/"
-            (if (or count (eq universe 'stock))
-                "json_v2.php/Market_Center."
-              "jsonp.php/thsFundRank/Market_Center.")
-            (if count (concat "getHQNodeStockCount?node=" node)
-              (format "%s?page=%d&num=%d&sort=%s&asc=0&node=%s&symbol=&_s_r_a=page"
-                      (if (eq universe 'stock) "getHQNodeData" "getHQNodeDataSimple")
-                      page ths-data-ranking-page-size (if (eq sort 'amount) "amount" "changepercent") node)))))
+  (pcase universe
+    ('hkstock
+     (concat "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center."
+             (if count "getHKStockCount?node=qbgg_hk"
+               (format "getHKStockData?page=%d&num=%d&sort=%s&asc=0&node=qbgg_hk"
+                       page ths-data-ranking-page-size
+                       (if (eq sort 'amount) "amount" "changepercent")))))
+    ('usstock
+     (concat "https://stock.finance.sina.com.cn/usstock/api/jsonp_v2.php/var%20t=/US_CategoryService.getList"
+             (format "?page=%d&num=%d&sort=%s&asc=0&market=&id="
+                     page ths-data-ranking-page-size (if (eq sort 'amount) "amount" "chg"))))
+    (_
+     (let ((node (pcase universe ('stock "hs_a") ('etf "etf_hq_fund") ('lof "lof_hq_fund"))))
+       (concat "https://vip.stock.finance.sina.com.cn/quotes_service/api/"
+               (if (or count (eq universe 'stock))
+                   "json_v2.php/Market_Center."
+                 "jsonp.php/thsFundRank/Market_Center.")
+               (if count (concat "getHQNodeStockCount?node=" node)
+                 (format "%s?page=%d&num=%d&sort=%s&asc=0&node=%s&symbol=&_s_r_a=page"
+                         (if (eq universe 'stock) "getHQNodeData" "getHQNodeDataSimple")
+                         page ths-data-ranking-page-size (if (eq sort 'amount) "amount" "changepercent") node)))))))
 
 (defun ths-data--ranking-sina-count (text)
   "Parse Sina's stock count TEXT, rejecting empty or invalid totals."
@@ -626,8 +1017,8 @@ The 60-day change (f24) is already a percentage.  Missing values remain nil."
     (unless (and (integerp count) (> count 0)) (error "新浪排行榜响应缺少有效总数"))
     count))
 
-(defun ths-data--ranking-sina-parse (text sort page total &optional universe)
-  "Normalize Sina UNIVERSE ranking TEXT for SORT, PAGE and TOTAL.
+(defun ths-data--ranking-sina-listed-parse (text sort page total &optional universe)
+  "Normalize Sina's A-share or listed-fund ranking TEXT for SORT, PAGE and TOTAL.
 Volumes are shares, amount is yuan, and nmc is float market cap in 10,000 yuan.
 Sina does not provide the 60-day percentage change in this endpoint."
   (setq universe (ths-data-ranking-universe universe))
@@ -684,17 +1075,127 @@ Sina does not provide the 60-day percentage change in this endpoint."
     (list :universe universe :sort sort :page page :total total :source 'sina :fetched-at (float-time)
           :rows (nreverse result))))
 
+(defun ths-data--ranking-sina-hk-parse (text sort page total)
+  "Normalize Sina's Hong Kong ranking TEXT for SORT, PAGE and TOTAL.
+The endpoint answers with a bare JSON array whose records are string
+fields: symbol is a five-digit code with leading zeros, lasttrade is the
+latest price, changepercent is the percentage change and amount is the
+turnover in HKD.  Turnover rate, float market cap and the 60-day change are
+absent here and stay nil rather than being filled with invented numbers."
+  (setq text (ths-data--sina-json-body text))
+  (unless (string-match-p "\\`[ \t\r\n]*\\[" text)
+    (error "新浪港股排行榜响应不是股票列表"))
+  (let* ((rows (ths-data--json text))
+         (offset (* (1- page) ths-data-ranking-page-size)) seen result)
+    (unless (and (integerp total) (> total 0)
+                 (= (length rows) (min ths-data-ranking-page-size (max 0 (- total offset)))))
+      (error "新浪港股排行榜响应条目不完整"))
+    (cl-loop for row in rows for rank from (1+ offset) do
+             (let* ((code (ths-data--get row "symbol"))
+                    (name (ths-data--get row "name"))
+                    (symbol (and (stringp code) (ths-data--ranking-symbol code nil 'hkstock))))
+               (unless symbol
+                 (signal 'ths-data-ranking-universe-error (list (format "%s" code))))
+               (unless (and (stringp name) (not (string-empty-p name)))
+                 (error "新浪港股排行榜含无效股票"))
+               (when (member symbol seen) (error "新浪港股排行榜含重复证券: %s" symbol))
+               (push symbol seen)
+               (push (list :rank rank :code code :symbol symbol :name name
+                           :price (ths-data--positive (ths-data--get row "lasttrade"))
+                           :change (ths-data-number (ths-data--get row "changepercent"))
+                           :volume (ths-data-number (ths-data--get row "volume"))
+                           :amount (ths-data-number (ths-data--get row "amount"))
+                           :turnover nil
+                           :float-cap nil
+                           :change-60d nil
+                           :close (ths-data--positive (ths-data--get row "prevclose"))
+                           :high (ths-data--positive (ths-data--get row "high"))
+                           :low (ths-data--positive (ths-data--get row "low"))
+                           :open (ths-data--positive (ths-data--get row "open"))
+                           :time (ths-data--get row "ticktime")) result)))
+    (list :universe 'hkstock :sort sort :page page :total total :source 'sina
+          :fetched-at (float-time) :rows (nreverse result))))
+
+(defun ths-data--ranking-sina-us-parse (text sort page)
+  "Normalize Sina's US ranking TEXT for SORT and PAGE, returning its total.
+The response is JSONP: a block comment, then `var t=({...});' whose object
+carries count and data, so the total never needs a second request.  price,
+chg (a percentage) and volume are present while the turnover amount,
+turnover rate, float market cap and the 60-day change are not, so those
+keys stay nil instead of being filled with invented numbers."
+  (let ((text (ths-data--sina-json-body text)))
+    (unless (string-match-p "\\`[ \t\r\n]*{" text)
+      (let ((open (string-match "(" text))
+            (close (string-match ")[ \t\r\n]*;?[ \t\r\n]*\\'" text)))
+        (unless (and open close (< open close))
+          (error "新浪美股排行榜响应不是榜单对象"))
+        (setq text (string-trim (substring text (1+ open) close)))))
+    (unless (string-match-p "\\`{" text)
+      (error "新浪美股排行榜响应不是榜单对象"))
+    (let* ((body (ths-data--json text))
+           (total (ths-data-number (ths-data--get body "count")))
+           (rows (ths-data--get body "data"))
+           (offset (* (1- page) ths-data-ranking-page-size)) seen result)
+      (unless (and (integerp total) (> total 0))
+        (error "新浪美股排行榜响应缺少有效总数"))
+      (unless (and (listp rows)
+                   (= (length rows) (min ths-data-ranking-page-size (max 0 (- total offset)))))
+        (error "新浪美股排行榜响应条目不完整"))
+      (cl-loop for row in rows for rank from (1+ offset) do
+               (let* ((code (ths-data--get row "symbol"))
+                      (name (or (ths-data--get row "cname") (ths-data--get row "name")))
+                      (symbol (and (stringp code) (ths-data--ranking-symbol code nil 'usstock))))
+                 (unless symbol
+                   (signal 'ths-data-ranking-universe-error (list (format "%s" code))))
+                 (unless (and (stringp name) (not (string-empty-p name)))
+                   (error "新浪美股排行榜含无效股票"))
+                 (when (member symbol seen) (error "新浪美股排行榜含重复证券: %s" symbol))
+                 (push symbol seen)
+                 (push (list :rank rank :code (upcase code) :symbol symbol :name name
+                             :price (ths-data--positive (ths-data--get row "price"))
+                             :change (ths-data-number (ths-data--get row "chg"))
+                             :volume (ths-data-number (ths-data--get row "volume"))
+                             :amount nil
+                             :turnover nil
+                             :float-cap nil
+                             :change-60d nil
+                             :close (ths-data--positive (ths-data--get row "preclose"))
+                             :high (ths-data--positive (ths-data--get row "high"))
+                             :low (ths-data--positive (ths-data--get row "low"))
+                             :open (ths-data--positive (ths-data--get row "open"))
+                             :time nil) result)))
+      (list :universe 'usstock :sort sort :page page :total total :source 'sina
+            :fetched-at (float-time) :rows (nreverse result)))))
+
+(defun ths-data--ranking-sina-parse (text sort page total &optional universe)
+  "Dispatch Sina's ranking TEXT to the parser of UNIVERSE.
+A-share and listed-fund responses keep their original parser; Hong Kong
+answers with a bare array and a separate count request, while US answers
+with JSONP that carries its own total, so TOTAL is ignored there."
+  (pcase (ths-data-ranking-universe universe)
+    ('hkstock (ths-data--ranking-sina-hk-parse text sort page total))
+    ('usstock (ths-data--ranking-sina-us-parse text sort page))
+    (_ (ths-data--ranking-sina-listed-parse text sort page total universe))))
+
 (defun ths-data-fetch-ranking (sort page callback &optional universe)
   "Fetch UNIVERSE ranking SORT and PAGE; return a cancellation function.
 CALLBACK receives the parsed ranking and error.  Providers use market-wide
-server sorting, independently of `ths-data-symbols'."
+server sorting, independently of `ths-data-symbols'.  Hong Kong and US
+rankings have no Eastmoney node; Hong Kong counts through Sina's own
+endpoint, while the US JSONP body already carries its total."
   (setq universe (ths-data-ranking-universe universe))
   (unless (and (memq sort '(change amount)) (integerp page) (> page 0))
     (error "无效排行参数: %s / %s" sort page))
   (let ((nodes (cl-loop for provider in ths-data-ranking-providers append
-                       (pcase provider ('eastmoney '((eastmoney) (eastmoney . t)))
-                              ('sina '((sina . count)))
-                              (_ (error "无效排行榜数据源: %s" provider)))))
+                       (pcase provider
+                         ('eastmoney
+                          (unless (memq universe '(hkstock usstock))
+                            '((eastmoney) (eastmoney . t))))
+                         ('sina
+                          (pcase universe
+                            ('usstock '((sina . data)))
+                            (_ '((sina . count)))))
+                         (_ (error "无效排行榜数据源: %s" provider)))))
         total cancel cancelled done (generation 0) failures)
     (cl-labels
         ((next ()
@@ -733,8 +1234,19 @@ server sorting, independently of `ths-data-symbols'."
           "?client=web&clientType=webSuggest&clientVersion=lastest&pageIndex=1&pageSize=20&keyword="
           (url-hexify-string (string-trim query))))
 
+(defun ths-data--search-symbol (prefix code)
+  "Return the market symbol for search PREFIX and CODE, or nil.
+The per-market code format comes from `ths-data-symbol', so Hong Kong keeps
+its five-digit leading zeros, US codes are upcased and A-share/fund codes
+stay six digits instead of a second regexp being maintained here."
+  (and (stringp code)
+       (condition-case nil (ths-data-symbol (concat prefix code)) (error nil))))
+
 (defun ths-data--search-parse (text)
-  "Parse code-table TEXT for mainland stocks and exchange-traded funds."
+  "Parse code-table TEXT for stocks and funds of every supported market.
+Mainland stocks and exchange-traded funds map as before; Eastmoney's 港股
+and 美股 rows map to the hk and us prefixes.  Rows of other security types
+\(indices, bonds, warrants) are ignored rather than guessed."
   (let* ((json (ths-data--json text)) (rows (ths-data--get json "result")) result)
     (unless (and (assq 'result json) (listp rows))
       (error "股票搜索响应缺少结果列表"))
@@ -743,7 +1255,8 @@ server sorting, independently of `ths-data-symbols'."
              (code (ths-data--get row "code"))
              (fund-market (ths-data-fund-market code))
              (prefix
-              (or (cdr (assoc market '(("沪A" . "sh") ("深A" . "sz") ("京A" . "bj"))))
+              (or (cdr (assoc market '(("沪A" . "sh") ("深A" . "sz") ("京A" . "bj")
+                                       ("港股" . "hk") ("美股" . "us"))))
                   (and fund-market
                        (or (and (member market '("沪基" "沪基金" "沪市基金"))
                                 (equal fund-market "sh"))
@@ -753,13 +1266,14 @@ server sorting, independently of `ths-data-symbols'."
                        fund-market))))
         (when prefix
           (let ((name (ths-data--get row "shortName"))
-                (pinyin (ths-data--get row "pinyin")))
-            (unless (and (stringp code) (string-match-p "\\`[0-9]\\{6\\}\\'" code)
+                (pinyin (ths-data--get row "pinyin"))
+                (symbol (ths-data--search-symbol prefix code)))
+            (unless (and symbol
                          (stringp name) (not (string-empty-p name))
                          (not (string-match-p "[\n\r\t]" name)))
               (error "股票搜索结果包含无效代码或名称"))
-            (unless (seq-find (lambda (stock) (equal (plist-get stock :symbol) (concat prefix code))) result)
-              (let ((stock (ths-data-placeholder (concat prefix code))))
+            (unless (seq-find (lambda (stock) (equal (plist-get stock :symbol) symbol)) result)
+              (let ((stock (ths-data-placeholder symbol)))
                 (setq stock (plist-put stock :name name))
                 (setq stock (plist-put stock :pinyin (if (stringp pinyin) pinyin "")))
                 (push stock result)))))))

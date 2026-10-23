@@ -14,19 +14,53 @@
   buffer local rows labels query timer cancel (generation 0) (active t) status overlay)
 (defvar-local ths-search--current nil)
 
+(defconst ths-search--market-prefix-regexp
+  "\\`\\(?:sh\\|sz\\|bj\\|of\\)\\([0-9]+\\)\\'"
+  "A-share and fund market prefix before a bare trading code.")
+
+(defconst ths-search--hk-us-prefix-regexp
+  "\\`\\(?:hk\\|us\\)\\([0-9A-Za-z.]+\\)\\'"
+  "Hong Kong and US market prefix before a code or index ticker.")
+
+(defun ths-search--strip-prefix (query)
+  "Return QUERY without a redundant market prefix.
+The code-table endpoint wants the bare code, so `hk00700' becomes `00700'
+and `usAAPL' becomes `AAPL'; A-share prefixes are stripped as before and
+anything else is passed through untouched."
+  (cond
+   ((string-match ths-search--market-prefix-regexp query) (match-string 1 query))
+   ((string-match ths-search--hk-us-prefix-regexp query) (match-string 1 query))
+   (t query)))
+
 (defun ths-search--label (stock)
-  "Return a searchable completion label for STOCK."
+  "Return a searchable completion label for STOCK.
+The market label comes from the market profile, so Hong Kong and US rows
+read 港股 / 美股 while listed funds keep 沪基 / 深基."
   (format "%s  %s  %s%s" (plist-get stock :symbol) (plist-get stock :name)
           (or (plist-get stock :market-label)
-              (pcase (substring (plist-get stock :symbol) 0 2) ("sh" "沪A") ("sz" "深A") (_ "京A")))
+              (let* ((symbol (plist-get stock :symbol))
+                     (market (and (stringp symbol) (ths-data-market symbol))))
+                (or (and market (if (ths-data-fund-p stock)
+                                    (or (plist-get market :fund-label)
+                                        (plist-get market :label))
+                                  (plist-get market :label)))
+                    "--")))
           (if (string-empty-p (or (plist-get stock :pinyin) "")) ""
             (concat "  " (plist-get stock :pinyin)))))
 
 (defun ths-search--local (session query)
-  "Return SESSION's known stocks matching QUERY."
-  (seq-filter (lambda (stock)
-                (string-match-p (regexp-quote (downcase query)) (downcase (ths-search--label stock))))
-              (ths-search--session-local session)))
+  "Return SESSION's known stocks matching QUERY.
+QUERY matches the completion label (symbol, name, market label, pinyin) and
+also the bare code, so `hk00700' and `00700' both find `hk00700'."
+  (let ((needle (downcase (ths-search--strip-prefix query)))
+        (full (downcase query)))
+    (seq-filter (lambda (stock)
+                  (or (string-empty-p full)
+                      (string-match-p (regexp-quote full) (downcase (ths-search--label stock)))
+                      (and (not (string-empty-p needle))
+                           (string-match-p (regexp-quote needle)
+                                           (downcase (or (plist-get stock :code) ""))))))
+                (ths-search--session-local session))))
 
 (defun ths-search--set-rows (session rows)
   "Store deduplicated ROWS and their completion labels in SESSION."
@@ -99,7 +133,7 @@
   (when (and (ths-search--session-active session) (= generation (ths-search--session-generation session)))
     (let ((cancel
            (ths-data-search
-            (if (string-match "\\`\\(?:sh\\|sz\\|bj\\|of\\)\\([0-9]+\\)\\'" query) (match-string 1 query) query)
+            (ths-search--strip-prefix query)
             (lambda (rows failure)
               (when (and (ths-search--session-active session) (= generation (ths-search--session-generation session)))
                 (setf (ths-search--session-cancel session) nil)

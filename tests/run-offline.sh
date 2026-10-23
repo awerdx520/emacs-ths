@@ -2,11 +2,13 @@
 # 离线 ERT 入口：与 Makefile 的 BOOTSTRAP 保持同一套启动引导。
 #
 # 用法：
-#   tests/run-offline.sh                      # 排除已知基线红
-#   tests/run-offline.sh --all                # 全量（含已知基线红，预期非零）
+#   tests/run-offline.sh                      # 全量（0 unexpected）
+#   tests/run-offline.sh --all                # 全量（与默认等价，保留兼容）
 #   tests/run-offline.sh --selector REGEXP    # 只跑名字匹配 REGEXP 的用例
 #
 # 环境变量：EMACS（默认 emacs）、STRAIGHT_BUILD（straight build 目录兜底）。
+# locale 固定为 C.UTF-8：3 例宽字符显示宽度断言（曾记作「基线 3 红」）在
+# zh_CN.UTF-8 下失败、C.UTF-8 下全绿，与 Makefile 的 LOCALE_ENV 保持一致。
 
 set -euo pipefail
 
@@ -56,16 +58,18 @@ tests=(
     tests/ths-tests.el
     tests/ths-layout-tests.el
     tests/ths-ai-tests.el
+    tests/ths-hkus-tests.el
 )
 
-known_failures="ths-fixture-charts-and-book-have-consistent-bounds ths-volume-dashboard-shows-both-panels-without-growing-page ths-volume-terminal-charts-preserve-height-and-column-width"
+# 已知基线失败：当前为空。那 3 条曾被排除的用例已由 LC_ALL=C.UTF-8 转绿。
+# 注意：列表为空时 `(not (member ))` 是非法 elisp，因此选择器一律直接用 `t`。
+known_failures=""
 
 if [ -n "$selector_regexp" ]; then
     ert_selector="\"$selector_regexp\""
-elif [ "$run_all" -eq 1 ]; then
-    ert_selector="t"
 else
-    ert_selector="(quote (not (member $known_failures)))"
+    # `--all` 与默认现在等价（known_failures 空），标志保留以免调用方失效。
+    ert_selector="t"
 fi
 
 if [ -n "${STRAIGHT_BUILD:-}" ]; then
@@ -86,7 +90,7 @@ output_file="$(mktemp)"
 trap 'rm -f "$output_file"' EXIT
 
 set +e
-"$EMACS_BIN" -Q --batch \
+LC_ALL=C.UTF-8 "$EMACS_BIN" -Q --batch \
     --eval "$bootstrap" \
     "${load_args[@]}" \
     --eval "(ert-run-tests-batch-and-exit $ert_selector)" 2>&1 | tee "$output_file"

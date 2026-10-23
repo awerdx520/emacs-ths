@@ -8,7 +8,9 @@
 (defvar vertico--candidates-ov)
 
 (defconst ths-search-test-response
-  "{\"result\":[{\"code\":\"600519\",\"shortName\":\"贵州茅台\",\"securityTypeName\":\"沪A\",\"pinyin\":\"GZMT\"},{\"code\":\"000001\",\"shortName\":\"平安银行\",\"securityTypeName\":\"深A\"},{\"code\":\"920001\",\"shortName\":\"测试北交股\",\"securityTypeName\":\"京A\"},{\"code\":\"600519\",\"shortName\":\"贵州茅台\",\"securityTypeName\":\"沪A\"},{\"code\":\"000001\",\"shortName\":\"上证指数\",\"securityTypeName\":\"指数\"},{\"code\":\"00700\",\"shortName\":\"腾讯控股\",\"securityTypeName\":\"港股\"},{\"code\":\"510300\",\"shortName\":\"沪深300ETF\",\"securityTypeName\":\"基金\"}]}")
+  "{\"result\":[{\"code\":\"600519\",\"shortName\":\"贵州茅台\",\"securityTypeName\":\"沪A\",\"pinyin\":\"GZMT\"},{\"code\":\"000001\",\"shortName\":\"平安银行\",\"securityTypeName\":\"深A\"},{\"code\":\"920001\",\"shortName\":\"测试北交股\",\"securityTypeName\":\"京A\"},{\"code\":\"600519\",\"shortName\":\"贵州茅台\",\"securityTypeName\":\"沪A\"},{\"code\":\"000001\",\"shortName\":\"上证指数\",\"securityTypeName\":\"指数\"},{\"code\":\"510300\",\"shortName\":\"沪深300ETF\",\"securityTypeName\":\"基金\"}]}")
+;; 港股 / 美股样本不放进上面这份 A 股夹具：港美映射由 ths-hkus-tests.el 的
+;; 独立样本覆盖，本文件既有断言只描述 A 股与场内基金的行为。
 
 (ert-deftest ths-search-parser-keeps-unique-mainland-stocks-and-listed-funds ()
   (let ((rows (ths-data--search-parse ths-search-test-response)))
@@ -51,13 +53,19 @@
                                         ("510300" . "指数")
                                         ("159915" . "沪基")
                                         ("161725" . "场外基金")
-                                        ("110001" . "债券") ("00700" . "港股"))))))))
+                                        ("110001" . "债券"))))))))
          (rows (ths-data--search-parse text)))
     (should (equal '("sh510300" "sz159915" "sh501018" "sz161725")
                    (mapcar (lambda (row) (plist-get row :symbol)) rows)))
     (should (cl-every #'ths-data-fund-p rows))
     (should (equal '("沪基" "深基" "沪基" "深基")
-                   (mapcar (lambda (row) (plist-get row :market-label)) rows)))))
+                   (mapcar (lambda (row) (plist-get row :market-label)) rows)))
+    ;; 港股映射另用独立样本断言，避免把港美 symbol 混入上面的基金断言。
+    (should (equal '("hk00700")
+                   (mapcar (lambda (row) (plist-get row :symbol))
+                           (ths-data--search-parse
+                            (concat "{\"result\":[{\"code\":\"00700\",\"shortName\":\"腾讯控股\","
+                                    "\"securityTypeName\":\"港股\"}]}")))))))
 
 (ert-deftest ths-search-debounces-edits-and-keeps-completed-labels ()
   (let ((session (ths-search--create :local (ths-data--search-parse ths-search-test-response))))
