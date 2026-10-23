@@ -1,3 +1,4 @@
 *.elc
 ths-diagnostic.eldata
 .envrc
+test-nativecomp-cache-*/
