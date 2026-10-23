@@ -231,6 +231,45 @@ qfqday，data 键带交易所后缀 usAAPL.OQ，行同样为数组。")
   "新浪美股日 K JSONP 真实形态（探测 2026-10-22）：`var _<CODE>_MinK=([...]);'
 前有块注释，每条为 d/o/h/l/c/v/a 对象，全历史约 941KB。")
 
+(defun ths-hkus-test-daily-rows (rows)
+  "Return ROWS Tencent daily-K rows in the measured array format.
+Every row is `[日期 开 收 高 低 成交量]' with six string elements; the dates
+run through 2026 so the date-format assertion stays meaningful.  Only the
+row shape is real; the numbers are synthetic and never claim to be quotes."
+  (mapconcat #'identity
+             (cl-loop for i below rows
+                      collect (format "[\"2026-%02d-%02d\",\"1.00\",\"1.10\",\"1.20\",\"0.90\",\"100.00\"]"
+                                      (1+ (/ i 28)) (1+ (% i 28))))
+             ","))
+
+(defconst ths-hkus-test-tencent-hk-daily-121
+  (concat "{\"code\":0,\"msg\":\"\",\"data\":{\"hk00700\":{\"day\":["
+          (ths-hkus-test-daily-rows 121) "],"
+          "\"qt\":{\"hk00700\":[\"100\",\"腾讯控股\",\"00700\",\"380.800\",\"393.800\"]},"
+          "\"prec\":\"473.800\"}}}")
+  "腾讯港股日 K 121 行响应（探测 2026-10-22：请求 120 根、实际返回 121 行，多出
+当日未收盘的一根）。键名 day 与行格式取自真实响应；121 行数值按真实行格式合成。")
+
+(defconst ths-hkus-test-tencent-us-daily-120
+  (concat "{\"code\":0,\"msg\":\"\",\"data\":{\"usAAPL.OQ\":{\"qfqday\":["
+          (ths-hkus-test-daily-rows 120) "],"
+          "\"qt\":{\"usAAPL.OQ\":[\"200\",\"苹果\",\"AAPL.OQ\",\"343.99\",\"339.50\"]},"
+          "\"version\":\"12\"}}}")
+  "腾讯美股日 K 120 行响应（探测 2026-10-22：请求 120 根即返回 120 行）。键名
+qfqday、data 键带交易所后缀，行格式与真实响应一致，数值同样按行格式合成。")
+
+(defconst ths-hkus-test-sina-us-daily-130
+  (concat "/*<script>location.href='//sina.com';</script>*/\n"
+          "var _AAPL_MinK=(["
+          (mapconcat #'identity
+                     (cl-loop for i below 130
+                              collect (format "{\"d\":\"2026-%02d-%02d\",\"o\":\"1.00\",\"h\":\"1.20\",\"l\":\"0.90\",\"c\":\"1.10\",\"v\":\"100\",\"a\":\"0\"}"
+                                              (1+ (/ i 28)) (1+ (% i 28))))
+                     ",")
+          "]);")
+  "新浪美股日 K JSONP 130 行响应（探测 2026-10-22：线上全历史约一万根、只保留末
+120 根）。对象格式取自真实响应，条数按该格式合成 130 条以覆盖截断分支。")
+
 (defun ths-hkus-test-chart-stock (symbol slots base)
   "Return a STOCK plist for SYMBOL with SLOTS and BASE for chart tests."
   (plist-put (list :symbol symbol :price base :intraday-close base
@@ -305,20 +344,13 @@ qfqday，data 键带交易所后缀 usAAPL.OQ，行同样为数组。")
     (should (equal '(("b")) (ths-data--tencent-candles
                              '((qfqday ("a")) (day ("b"))) "sh600519")))
     ;; 真实行格式生成 120 根美股日 K：数量下限与日期形态。
-    (let* ((rows (cl-loop for i below 120
-                          collect (format "[\"2026-%02d-%02d\",\"1.00\",\"1.10\",\"1.20\",\"0.90\",\"100.00\"]"
-                                          (1+ (/ i 28)) (1+ (% i 28)))))
-           (text (concat "{\"code\":0,\"data\":{\"usAAPL.OQ\":{\"qfqday\":["
-                         (mapconcat #'identity rows ",") "]}}}"))
+    (let* ((text ths-hkus-test-tencent-us-daily-120)
            (candles (plist-get (ths-data--chart text "usAAPL" 'tencent 'daily) :candles)))
       (should (= 120 (length candles)))
       (should (string-match-p "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\'"
                               (plist-get (car (last candles)) :date))))
     ;; 新浪兜底只保留最近 120 根（全历史约一万根）。
-    (let* ((rows (cl-loop for i below 130
-                          collect (format "{\"d\":\"2026-%02d-%02d\",\"o\":\"1.00\",\"h\":\"1.20\",\"l\":\"0.90\",\"c\":\"1.10\",\"v\":\"100\",\"a\":\"0\"}"
-                                          (1+ (/ i 28)) (1+ (% i 28)))))
-           (text (concat "var _AAPL_MinK=([" (mapconcat #'identity rows ",") "]);"))
+    (let* ((text ths-hkus-test-sina-us-daily-130)
            (candles (plist-get (ths-data--chart text "usAAPL" 'sina 'daily) :candles)))
       (should (= 120 (length candles))))))
 
@@ -785,5 +817,104 @@ qfqday，data 键带交易所后缀 usAAPL.OQ，行同样为数组。")
       (etaf-runtime-refit runtime 44 24)
       (should (< (cl-count-if #'ths-test-visible names) 8))
       (should (ths-test-visible "上证指数")))))
+
+;;; 任务7：可复用夹具（tests/ths-fixtures.el）与真实样本的结构事实。
+;; 夹具数值来自 2026-10-22 的腾讯响应（原始体见本文件上方 defconst）；这里只断言
+;; 画像一致性、档数与行数等结构事实，不重新断言已由上方用例覆盖的解析字段。
+
+(ert-deftest ths-hkus-fixture-stocks-follow-profile ()
+  "港美夹具字段齐全，且价格小数位 / 成交量单位 / 市场标签都取自画像。"
+  (dolist (case (list (list ths-test-hk-stock 331 3) (list ths-test-us-stock 391 2)))
+    (let ((stock (nth 0 case)) (points (nth 1 case)) (decimals (nth 2 case)))
+      (should (equal (plist-get stock :symbol)
+                     (ths-data-symbol (plist-get stock :symbol))))
+      (should (equal (plist-get stock :market-label) (ths-data-market-label stock)))
+      (should (equal (plist-get stock :currency)
+                     (plist-get (ths-data-market stock) :currency)))
+      ;; 港美的成交量单位是股，不是手。
+      (should (equal "股" (ths-data-volume-unit stock)))
+      (dolist (key '(:code :name :price :close :high :low :amount :volume :change
+                     :market-label :book :candles :points :time))
+        (should (plist-get stock key)))
+      ;; 分时点数 = 画像分钟数 + 收盘端点（港 331 / 美 391）。
+      (should (= points (length (plist-get stock :points))))
+      ;; 价格小数位由画像决定：港 3 位、美 2 位。
+      (should (= decimals (plist-get (ths-data-market stock) :decimals)))
+      (should (equal (format "380.6%s" (make-string (1- decimals) ?0))
+                     (ths-data-format-price stock 380.6)))
+      (should (string-match-p "\\`2026-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]\\'"
+                              (plist-get stock :time)))))
+  ;; 港美样本独立成组，默认夹具集仍是 A 股 8 只（布局 / 排行榜 / 18 次请求
+  ;; 这些既有断言依赖它的行数与排序）。
+  (should (= 2 (length ths-test--hk-us-stocks)))
+  (should (= 8 (length (ths-test-stocks))))
+  (should-not (seq-find (lambda (stock)
+                          (member (ths-data-market-key stock) '("hk" "us")))
+                        (ths-test-stocks))))
+
+(ert-deftest ths-hkus-fixture-book-levels-by-profile ()
+  "ths-test-book-for 按画像档数出档：A 股 5 档逐值不变、港美 1 档、场外基金 0 档。"
+  (let ((a-share (car (ths-test-stocks))))
+    ;; A 股委托既有 `ths-test--book'，返回值必须逐字段相同（不是另写一份）。
+    (should (equal (ths-test--book a-share) (ths-test-book-for a-share)))
+    (should (= 10 (length (ths-test-book-for a-share))))
+    (should (equal '("卖5" "卖4" "卖3" "卖2" "卖1" "买1" "买2" "买3" "买4" "买5")
+                   (mapcar #'car (ths-test-book-for a-share))))
+    ;; 港美 1 档：只有卖1 / 买1，不补第 2 档。
+    (dolist (stock (list ths-test-hk-stock ths-test-us-stock))
+      (let ((book (ths-test-book-for stock)))
+        (should (= 2 (length book)))
+        (should (equal '("卖1" "买1") (mapcar #'car book)))
+        (should (eq 'ask (nth 3 (nth 0 book))))
+        (should (eq 'bid (nth 3 (nth 1 book)))))))
+  ;; 场外基金画像 0 档：返回 nil，不伪造档位。
+  (should (= 0 (plist-get (ths-data-market "of005827") :book-levels)))
+  (should-not (ths-test-book-for (list :symbol "of005827" :price 1.2345))))
+
+(ert-deftest ths-hkus-daily-row-count-fixtures ()
+  "日 K 夹具行数：港股 day 键 121 行原样保留，美股 qfqday 键 120 行。"
+  (let ((hk (plist-get (ths-data--chart ths-hkus-test-tencent-hk-daily-121
+                                        "hk00700" 'tencent 'daily)
+                       :candles))
+        (us (plist-get (ths-data--chart ths-hkus-test-tencent-us-daily-120
+                                        "usAAPL" 'tencent 'daily)
+                       :candles)))
+    (should (= 121 (length hk)))
+    (should (= 120 (length us)))
+    (dolist (candles (list hk us))
+      (should (= 100 (plist-get (car (last candles)) :volume)))
+      (should (= 1.1 (plist-get (car (last candles)) :close)))
+      (dolist (candle candles)
+        (should (string-match-p "\\`[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\'"
+                                (plist-get candle :date)))))))
+
+(ert-deftest ths-hkus-quote-book-volume-shape ()
+  "腾讯港美 1 档盘口：港股档位量恒 0（该源不发量），美股档位量是真实量。"
+  (let ((hk (plist-get (ths-data--quote-tencent ths-hkus-test-tencent-hk-quote "hk00700") :book))
+        (us (plist-get (ths-data--quote-tencent ths-hkus-test-tencent-us-quote "usAAPL") :book)))
+    (should (equal '(0.0 0.0) (mapcar (lambda (row) (nth 2 row)) hk)))
+    (should (equal '(80.0 360.0) (mapcar (lambda (row) (nth 2 row)) us)))
+    (should (= 343.93 (nth 1 (nth 0 us))))
+    (should (= 343.8 (nth 1 (nth 1 us))))
+    ;; 两根样本都够画像的字段下限，且都只出 1 档（两行）。
+    (dolist (case (list (list ths-hkus-test-tencent-hk-quote "hk00700")
+                        (list ths-hkus-test-tencent-us-quote "usAAPL")))
+      (let* ((symbol (nth 1 case))
+             (fields (split-string (cadr (split-string (nth 0 case) "\"")) "~")))
+        (should (>= (length fields) (plist-get (ths-data-market symbol) :min-fields)))))))
+
+(ert-deftest ths-hkus-quote-field-floor ()
+  "腾讯报价的字段下限来自画像 :min-fields：低于下限直接报错，不做尽量解析。"
+  (dolist (case (list (list ths-hkus-test-tencent-hk-quote "hk00700" 40)
+                      (list ths-hkus-test-tencent-us-quote "usAAPL" 39)))
+    (let* ((text (nth 0 case)) (symbol (nth 1 case)) (count (nth 2 case))
+           (fields (split-string (cadr (split-string text "\"")) "~")))
+      ;; 真实响应是 78 / 73 字段，样本截断到 f39 但仍高于下限。
+      (should (= count (length fields)))
+      (should (>= count (plist-get (ths-data-market symbol) :min-fields)))
+      (should-error (ths-data--quote-tencent
+                     (concat "v_" symbol "=\""
+                             (mapconcat #'identity (seq-take fields 38) "~") "\";")
+                     symbol)))))
 
 ;;; ths-hkus-tests.el ends here
