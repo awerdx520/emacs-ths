@@ -1402,10 +1402,11 @@ announcement carries a body (3000 chars) and a page count."
       ;; 关闭不等于四小节缺失：其余小节照常渲染。
       (should (string-match-p "^\\*\\* 消息面$" report))
       (should (string-match-p "^\\*\\* 公告解读$" report)))
-    ;; 开启：读数 + 两市成交额 + 模型含义都渲染。
+    ;; 开启：读数 + 两市成交额 + 模型含义都渲染。成交额走 `:market-turnover'
+    ;; （渲染层唯一取值点），个股换手率的 `:turnover' 不再被当成成交额。
     (let ((report (ths-ai--report analysis
                                   (append base (list :macro macro
-                                                     :turnover 1.0e12)))))
+                                                     :market-turnover 1.0e12)))))
       (should (string-match-p "^\\*\\* 外围与宏观$" report))
       (should (string-match-p "美元兑人民币 7.12 · 美元指数 104.30" report))
       (should (string-match-p "隔夜美股：道指 42100.00 · 纳指 18300.00" report))
@@ -1414,6 +1415,32 @@ announcement carries a body (3000 chars) and a page count."
       ;; 第五节排在公告解读之后。
       (should (< (string-match-p "^\\*\\* 公告解读$" report)
                  (string-match-p "^\\*\\* 外围与宏观$" report))))))
+
+(ert-deftest ths-ai-report-macro-hides-turnover-when-off ()
+  ;; 键二义回归：个股事实里的 `:turnover' 是换手率，绝不是两市成交额。
+  ;; 只有 `:turnover' 而无 `:market-turnover' 时，报告既不得出现宏观小节，
+  ;; 也不得把换手率印在「两市成交额」标签下（B6 之前就是这样错的）。
+  (let* ((ths-ai-macro-enabled nil)
+         (ths-ai-news-enabled nil)
+         (ths-ai-industry-enabled nil)
+         (ths-ai-financials-enabled nil)
+         (ths-ai-announcements-enabled nil)
+         (facts (ths-ai--stock-facts (ths-ai-test--stock) (ths-ai-test--info)))
+         (analysis (plist-put (ths-ai-test--analysis)
+                              :macro (list :implication "外围风险偏好回升")))
+         (prompt (ths-ai--prompt facts 'stock))
+         (report (ths-ai--report analysis facts)))
+    ;; 前提：换手率在事实里，成交额专用键不在。
+    (should (numberp (plist-get facts :turnover)))
+    (should-not (plist-member facts :market-turnover))
+    ;; 提示词：换手率仍在自己的标签下，宏观行与成交额行都不出现。
+    (should (string-match-p "^换手率(%): " prompt))
+    (should-not (string-match-p "外围与宏观" prompt))
+    (should-not (string-match-p "两市成交额" prompt))
+    ;; 报告：即使模型给了 macro 结论，事实侧没有成交额/读数也不渲染整节。
+    (should-not (string-match-p "外围与宏观" report))
+    (should-not (string-match-p "两市成交额" report))
+    (should-not (string-match-p "模型：外围风险偏好回升" report))))
 
 (ert-deftest ths-ai-report-shows-missing-data ()
   (let ((report (ths-ai--report (ths-ai-test--analysis) nil)))
@@ -1462,7 +1489,8 @@ announcement carries a body (3000 chars) and a page count."
   (let ((market (ths-ai-test--market-analysis
                  (list :readings '("道指 +0.5%") :implication "外围偏暖")))
         (on (list :up-count 3 :down-count 2 :flat-count 0 :average-change 0.12
-                  :macro (list :gold 2650.0 :a50 12800.0) :turnover 8.0e11))
+                  :macro (list :gold 2650.0 :a50 12800.0)
+                  :turnover 8.0e11 :market-turnover 8.0e11))
         (off (list :up-count 3 :down-count 2 :flat-count 0 :average-change 0.12)))
     ;; 开启：盘面小节之后追加第 5 节，读数取自盘面事实。
     (let ((report (ths-ai--report nil nil market nil on)))
@@ -1684,5 +1712,228 @@ invalidated by the time of the newest headline alone."
   (let ((facts (ths-ai--stock-facts (ths-ai-test--stock) (ths-ai-test--info))))
     (should-not (plist-member facts :macro))
     (should-not (plist-member facts :market-turnover))))
+
+;;;; 开关组合（B7）：真实 `ths-info-collect' + 计数型传输桩
+;;
+;; 这一组不 mock `ths-info-collect'，只替换 `ths-info--http'：要证明的是「开关关闭
+;; 时零请求」，把编排层 mock 掉就变成了自说自话。传输桩按 URL 分类返回最小可解析
+;; 样本，并把每个 URL 记进 `ths-ai-test--info-http-urls'；回调走 0 秒定时器，与真实
+;; 传输一样是异步的，因此「同步回调」的实现会在这里失败而不是在生产里失败。
+
+(defconst ths-ai-test--info-news-body
+  (concat "cb({\"code\":0,\"result\":{\"cmsArticleWebOld\":["
+          "{\"date\":\"2026-10-22 15:13:16\",\"mediaName\":\"证券时报\","
+          "\"title\":\"<em>600519</em> 贵州茅台季度净利增长\"}]}})")
+  "最小新闻 JSONP 样本：1 条标题，标题内含搜索高亮标签。")
+
+(defconst ths-ai-test--info-macro-body
+  (concat "var hq_str_fx_susdcny=\"17:29:58,7.1200,7.1210,7.1180,7.1300,7.1100,"
+          "7.1205,7.1200,美元人民币,2026-10-23\";")
+  "最小宏观 hq 样本：只给美元兑人民币一行，足以让 `:macro' 非空。")
+
+(defconst ths-ai-test--info-turnover-body
+  (concat "var hq_str_sh000001=\"上证指数,3900.123,3880.000,3912.456,3920.000,"
+          "3875.000,0.000,0.000,41000000000,600000000000.0\";")
+  "最小成交额 hq 样本：索引 9 为成交额（元）。")
+
+(defconst ths-ai-test--info-industry-name-body
+  "<table><tr><td class=\"ct\">所属行业板块：</td><td class=\"ct\">白酒</td></tr></table>"
+  "最小行业片段：`所属行业' 之后的第一个单元格是行业名。")
+
+(defconst ths-ai-test--info-industry-change-body
+  (concat "<table><tbody><tr><td><a href=\"http://q.10jqka.com.cn/thshy/detail/"
+          "code/881273/\">白酒</a></td><td>2.54</td><td>881273</td></tr></tbody></table>")
+  "最小行业涨跌样本：锚文本是行业名，紧随其后的单元格是当日涨跌幅。")
+
+(defvar ths-ai-test--info-http-urls nil
+  "URLs the counting transport stub received, newest first.")
+
+(defun ths-ai-test--info-http (url _params callback)
+  "Counting stand-in for `ths-info--http' that never leaves the process.
+The body is chosen by URL; an unrecognized URL answers with status 1 so an
+unexpected request fails loudly instead of silently returning nil data."
+  (push url ths-ai-test--info-http-urls)
+  (let ((body (cond
+               ((string-match-p "jsonp" url) ths-ai-test--info-news-body)
+               ((string-match-p "CorpOtherInfo" url) ths-ai-test--info-industry-name-body)
+               ((string-match-p "thshy" url) ths-ai-test--info-industry-change-body)
+               ((string-match-p "sh000001" url) ths-ai-test--info-turnover-body)
+               ((string-match-p "hq\\.sinajs\\.cn" url) ths-ai-test--info-macro-body))))
+    (run-at-time 0 nil (lambda () (funcall callback body (if body 0 1))))
+    (lambda () nil)))
+
+(defun ths-ai-test--info-http-count (&rest patterns)
+  "Return how many recorded info URLs match every regexp in PATTERNS."
+  (seq-count (lambda (url)
+               (seq-every-p (lambda (pattern) (string-match-p pattern url))
+                            patterns))
+             ths-ai-test--info-http-urls))
+
+(defmacro ths-ai-test--with-counting-info-http (&rest body)
+  "Run BODY with `ths-info--http' replaced by the counting stub.
+The cache is disabled so that one test cannot serve another test's factor from
+`ths-info--cache'; the timeout is one second, which the stub never needs."
+  (declare (indent 0))
+  `(let ((ths-ai-test--info-http-urls nil)
+         (ths-info-timeout 1)
+         (ths-info-cache-seconds 0))
+     (cl-letf (((symbol-function 'ths-info--http)
+                (symbol-function 'ths-ai-test--info-http)))
+       ,@body)))
+
+(defun ths-ai-test--await (predicate &optional seconds)
+  "Wait until PREDICATE returns non-nil, advancing timers, up to SECONDS.
+In batch `accept-process-output' advances timers, so the deferred stub callbacks
+run without real sleeping.  Returns PREDICATE's last value."
+  (let ((deadline (+ (float-time) (or seconds 2.0)))
+        (result nil))
+    (while (and (not (setq result (funcall predicate)))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    result))
+
+(defun ths-ai-test--collect-now (stock)
+  "Run the real `ths-info-collect' for STOCK and return (INFO ERRORS).
+Asserts the collect contract that matters here: the callback runs exactly once."
+  (let ((calls 0)
+        (payload nil))
+    (ths-info-collect stock
+                      (lambda (info errors)
+                        (setq calls (1+ calls)
+                              payload (cons info errors))))
+    (should (ths-ai-test--await (lambda () (> calls 0))))
+    (should (= 1 calls))
+    (list (car payload) (cdr payload))))
+
+(ert-deftest ths-ai-info-switches-all-off ()
+  ;; 五个开关全关：真实编排层一个 HTTP 请求都不发，事实层没有任何信息面键，
+  ;; 提示词与「不收集信息」时逐字相同（只有 DATA 块，没有 INFO 块）。
+  (ths-ai-test--with-counting-info-http
+    (let ((ths-ai-news-enabled nil)
+          (ths-ai-announcements-enabled nil)
+          (ths-ai-financials-enabled nil)
+          (ths-ai-industry-enabled nil)
+          (ths-ai-macro-enabled nil)
+          (stock (ths-ai-test--stock)))
+      (let* ((collected (ths-ai-test--collect-now stock))
+             (info (nth 0 collected))
+             (errors (nth 1 collected))
+             (facts (ths-ai--stock-facts stock info))
+             (prompt (ths-ai--prompt facts 'stock)))
+        (should (= 0 (length ths-ai-test--info-http-urls)))
+        (should-not info)
+        (should-not errors)
+        (dolist (key '(:news :industry :financials :announcements
+                       :macro :market-turnover))
+          (should-not (plist-member facts key)))
+        (should-not (string-match-p "<<<INFO" prompt))
+        (should (= 1 (ths-ai-test--count "<<<DATA" prompt)))
+        ;; 与完全不传 INFO 的事实逐字同构：全关等价于改动前的提示词。
+        (should (equal prompt
+                       (ths-ai--prompt (ths-ai--stock-facts stock) 'stock)))))))
+
+(ert-deftest ths-ai-info-switches-only-macro ()
+  ;; 只开宏观：恰好两个请求（宏观面板 + 两市成交额），事实层只有 `:macro' 与
+  ;; `:market-turnover'，个股自己的换手率仍在 `:turnover' 里。
+  (ths-ai-test--with-counting-info-http
+    (let ((ths-ai-news-enabled nil)
+          (ths-ai-announcements-enabled nil)
+          (ths-ai-financials-enabled nil)
+          (ths-ai-industry-enabled nil)
+          (ths-ai-macro-enabled t)
+          (stock (ths-ai-test--stock)))
+      (let* ((collected (ths-ai-test--collect-now stock))
+             (info (nth 0 collected))
+             (facts (ths-ai--stock-facts stock info))
+             (prompt (ths-ai--prompt facts 'stock)))
+        (should (= 2 (length ths-ai-test--info-http-urls)))
+        (should (= 1 (ths-ai-test--info-http-count "hq\\.sinajs\\.cn" "fx_susdcny")))
+        (should (= 1 (ths-ai-test--info-http-count "sh000001")))
+        (should (numberp (plist-get (plist-get info :macro) :fx-usdcny)))
+        (should (< (abs (- 6.0e11 (plist-get info :turnover))) 1.0))
+        (dolist (key '(:news :announcements :financials :industry))
+          (should-not (plist-get info key)))
+        (should (numberp (plist-get (plist-get facts :macro) :fx-usdcny)))
+        (should (numberp (plist-get facts :market-turnover)))
+        (should (numberp (plist-get facts :turnover)))
+        (dolist (key '(:news :industry :financials :announcements))
+          (should-not (plist-member facts key)))
+        (should (string-match-p "^两市成交额(元): " prompt))
+        (should (string-match-p "^换手率(%): " prompt))
+        (should (= 1 (ths-ai-test--count "<<<INFO" prompt)))))))
+
+(ert-deftest ths-ai-info-market-collect-gets-macro ()
+  ;; 盘面路径闭环：`ths-ai--analyze-one' 对 `key='market' 传的是 nil stock，
+  ;; 真实 collect 仍要拿到宏观与成交额；盘面事实因此带 `:macro' 与
+  ;; `:market-turnover'，盘面报告的宏观小节才渲染得出来（生产路径回归）。
+  (ths-ai-test--with-counting-info-http
+    (let* ((ths-ai-news-enabled nil)
+           (ths-ai-announcements-enabled nil)
+           (ths-ai-financials-enabled nil)
+           (ths-ai-industry-enabled nil)
+           (ths-ai-macro-enabled t)
+           (market (ths-ai-test--synthetic-market))
+           (info (nth 0 (ths-ai-test--collect-now nil)))
+           (facts (ths-ai--market-facts (car market) (cdr market) info))
+           (market-analysis
+            (list :summary "指数窄幅震荡。" :breadth "3 涨 2 跌"
+                  :highlights '("金融权重护盘")
+                  :macro (list :implication "外围偏暖")))
+           (report (ths-ai--report nil nil market-analysis nil facts)))
+      (should (= 2 (length ths-ai-test--info-http-urls)))
+      (should (numberp (plist-get (plist-get info :macro) :fx-usdcny)))
+      (should (numberp (plist-get (plist-get facts :macro) :fx-usdcny)))
+      ;; 盘面事实里两个成交额键同值：`:turnover' 供提示词，`:market-turnover' 供渲染。
+      (should (numberp (plist-get facts :turnover)))
+      (should (= (plist-get facts :turnover) (plist-get facts :market-turnover)))
+      (should (string-match-p "^\\* 盘面分析$" report))
+      (should (string-match-p "^\\*\\* 外围与宏观$" report))
+      (should (string-match-p "两市成交额 6000.00 亿" report))
+      (should (string-match-p "模型：外围偏暖" report)))))
+
+(ert-deftest ths-ai-info-switches-only-news ()
+  ;; 只开新闻：恰好一个请求，事实层只有 `:news'。
+  (ths-ai-test--with-counting-info-http
+    (let ((ths-ai-news-enabled t)
+          (ths-ai-announcements-enabled nil)
+          (ths-ai-financials-enabled nil)
+          (ths-ai-industry-enabled nil)
+          (ths-ai-macro-enabled nil)
+          (stock (ths-ai-test--stock)))
+      (let* ((collected (ths-ai-test--collect-now stock))
+             (info (nth 0 collected))
+             (facts (ths-ai--stock-facts stock info)))
+        (should (= 1 (length ths-ai-test--info-http-urls)))
+        (should (= 1 (ths-ai-test--info-http-count "jsonp")))
+        (should (= 1 (length (plist-get info :news))))
+        (should (equal "600519 贵州茅台季度净利增长"
+                       (plist-get (car (plist-get info :news)) :title)))
+        (should (plist-member facts :news))
+        (dolist (key '(:industry :financials :announcements
+                       :macro :market-turnover))
+          (should-not (plist-member facts key)))))))
+
+(ert-deftest ths-ai-info-switches-news-and-industry ()
+  ;; 新闻 + 行业：三个请求（新闻 1 + 行业名 1 + 行业涨跌 1），公告与财报键不存在。
+  (ths-ai-test--with-counting-info-http
+    (let ((ths-ai-news-enabled t)
+          (ths-ai-announcements-enabled nil)
+          (ths-ai-financials-enabled nil)
+          (ths-ai-industry-enabled t)
+          (ths-ai-macro-enabled nil)
+          (stock (ths-ai-test--stock)))
+      (let* ((collected (ths-ai-test--collect-now stock))
+             (info (nth 0 collected))
+             (facts (ths-ai--stock-facts stock info))
+             (industry (plist-get facts :industry)))
+        (should (= 3 (length ths-ai-test--info-http-urls)))
+        (should (= 1 (ths-ai-test--info-http-count "jsonp")))
+        (should (= 1 (ths-ai-test--info-http-count "CorpOtherInfo")))
+        (should (= 1 (ths-ai-test--info-http-count "thshy")))
+        (should (plist-member facts :news))
+        (should (equal "白酒" (plist-get industry :name)))
+        (should (< (abs (- 2.54 (plist-get industry :change))) 1e-6))
+        (dolist (key '(:announcements :financials :macro :market-turnover))
+          (should-not (plist-member facts key)))))))
 
 ;;; ths-ai-tests.el ends here

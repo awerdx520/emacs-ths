@@ -501,9 +501,13 @@ at all; the up/down/flat counters themselves are not anonymous then, because
 they describe the user's own watchlist.
 
 INFO, when given, is the plist `ths-info-collect' hands to its callback.  The
-background factors (`:macro', `:turnover') are appended from
-`ths-ai--info-facts'; a factor that is switched off or came back empty
-contributes no key at all, so the prompt prints no line for it."
+background factors are appended from `ths-ai--info-facts'; a factor that is
+switched off or came back empty contributes no key at all, so the prompt prints
+no line for it.  The market-wide amount enters twice: as `:turnover' (the label
+the prompt and `ths-ai--market-fact-order' already use for this plist) and as
+`:market-turnover', which is the one key every fact list uses for it and the
+only one `ths-ai--macro-section' reads.  Writing both keeps the existing prompt
+labelling untouched and still gives the renderer a single source of truth."
   (let* ((changes (mapcar #'ths-data-change stocks))
          (known (delq nil changes))
          (amounts (delq nil (mapcar (lambda (stock) (plist-get stock :amount)) stocks)))
@@ -517,10 +521,16 @@ contributes no key at all, so the prompt prints no line for it."
            :total-amount (and aggregate-p (apply #'+ 0 amounts))
            :strongest (and aggregate-p (ths-ai--extreme-stock stocks #'>))
            :weakest (and aggregate-p (ths-ai--extreme-stock stocks #'<)))
-     (let ((extra (ths-ai--info-facts info)))
-       (cl-loop for key in '(:macro :turnover)
-                when (plist-member extra key)
-                append (list key (plist-get extra key)))))))
+     (let* ((extra (ths-ai--info-facts info))
+            (facts (cl-loop for key in '(:macro :turnover)
+                            when (plist-member extra key)
+                            append (list key (plist-get extra key))))
+            (turnover (plist-get extra :turnover)))
+       ;; `:market-turnover' 专表「两市成交额」，与本 plist 的 `:turnover' 同值；
+       ;; `ths-ai--macro-section' 只读它，个股事实与盘面事实因此共用同一取值点。
+       (when (numberp turnover)
+         (setq facts (plist-put facts :market-turnover turnover)))
+       facts))))
 
 ;;;; 提示词层
 
@@ -600,7 +610,9 @@ that `ths-ai--info-facts' omitted, so a switched-off factor prints no line.
 The strength rows are labelled anonymous on purpose: `ths-ai--market-facts'
 sends their change only, so the label must not imply a symbol name.
 The last two rows are information factors and obey the same omission rule as
-the stock list.")
+the stock list.  `:market-turnover' is deliberately not in this list: it rides
+along on the plist for the renderer (`ths-ai--macro-section'), while the prompt
+keeps printing the amount under this list's own `:turnover' label.")
 
 (defconst ths-ai--stock-info-keys
   '(:news :industry :financials :announcements :macro :market-turnover)
@@ -1080,7 +1092,8 @@ Model strings are sanitised exactly as in `ths-ai--stock-section'."
 ;;
 ;; 五个小节把「数据事实」与「模型结论」并排呈现，顺序固定：消息面 → 行业位置 →
 ;; 财报要点 → 公告解读 → 外围与宏观。数据侧来自 `ths-ai--info-facts' 产出的键
-;; （`:news' `:industry' `:financials' `:announcements' `:macro' `:turnover'），
+;; （`:news' `:industry' `:financials' `:announcements' `:macro'，两市成交额统一
+;; 以 `:market-turnover' 到达报告层），
 ;; 结论侧来自模型回复的同名字段。缺数据时不静默省略小节，而是明示「数据不足」——
 ;; 读者必须能区分「没抓到数据」和「模型没给结论」；唯一例外是外围与宏观：它的开关
 ;; 默认关闭，关闭时整节不渲染，否则每份报告都会多出一段与配置无关的噪音。
@@ -1393,19 +1406,20 @@ readings drop theirs."
 
 (defun ths-ai--macro-section (facts analysis)
   "Return the 外围与宏观 Org block, or nil when the factor is off or empty.
-The block renders only when FACTS carries `:macro' or a market-wide amount.  The
+The block renders only when FACTS carries `:macro' or `:market-turnover'.  The
 macro factor is off by default and a switched-off factor prints nothing at all:
 a \"数据不足\" line here would report a failure that is really a configuration
 choice.  The fact side is the readings plus the market-wide turnover, the model
-side is `macro.implication'.  The amount is read from `:market-turnover' first
-and falls back to `:turnover': on a stock fact list `:turnover' is the local
-turnover ratio, while the market-wide amount arrives as `:market-turnover';
-market facts carry only `:turnover'."
+side is `macro.implication'.
+
+The market-wide amount is read from `:market-turnover' only.  `:turnover' is not
+a fallback: on a stock fact list it is the security's turnover ratio, so falling
+back to it would print 换手率 underneath the 两市成交额 label — a wrong number
+that looks right.  Both fact builders therefore write the market-wide amount to
+`:market-turnover' (`ths-ai--stock-facts' renames it in, `ths-ai--market-facts'
+writes it next to its own `:turnover')."
   (let ((macro (plist-get facts :macro))
-        ;; 个股事实的 `:turnover' 是换手率，两市成交额在个股路径上是
-        ;; `:market-turnover'；盘面事实没有该键，仍用 `:turnover'。
-        (turnover (or (plist-get facts :market-turnover)
-                      (plist-get facts :turnover))))
+        (turnover (plist-get facts :market-turnover)))
     (when (or macro turnover)
       (let* ((readings (and macro (ths-ai--macro-readings-line macro)))
              (overnight (and macro (ths-ai--overnight-line
@@ -2161,8 +2175,10 @@ registration nor store its own answer.
 
 Only the stock analysis needs a selected stock; it is skipped so that the market
 analysis still runs.  The market analysis collects with a nil stock, which asks
-the data layer for nothing symbol-specific — its facts stay the dashboard
-aggregates.
+the data layer for nothing symbol-specific: its facts stay the dashboard
+aggregates plus the whole-market readings (宏观与两市成交额), which
+`ths-info-collect' fetches without a security whenever `ths-ai-macro-enabled'
+is on.
 
 While the collection runs the key is already registered, with a closure that
 flags `cancelled' and aborts the collection, so `ths-ai--cancel' and `ths--stop'

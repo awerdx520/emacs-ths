@@ -566,7 +566,14 @@ reports, industry name and change, macro panel and turnover); a failed or
 empty source only drops its own factor.  `ths-info-timeout' bounds the whole
 collection and delivers the factors that did arrive.  CALLBACK runs exactly
 once.  Return a cancel function that aborts the requests, the timeout and
-the callback."
+the callback.
+
+STOCK may be nil: the macro panel and the market-wide turnover are whole-market
+readings, so they are requested whenever `ths-ai-macro-enabled' is on, with or
+without a security.  That is what lets the market analysis — which collects with
+a nil stock — render its 外围与宏观 block.  The other four families are
+symbol-specific and are simply not requested when STOCK has no code; skipping
+them for lack of a subject is not a failure and records nothing in ERRORS."
   (let* ((symbol (ths-info--symbol-text stock))
          (code (ths-info--symbol-code symbol))
          (market (ths-info--symbol-market symbol))
@@ -665,14 +672,18 @@ the callback."
                           (lambda (industry)
                             (record :industry industry)
                             (fetch-industry-change (plist-get industry :name)))
-                          nil 'gb18030))
-        (when (ths-info--enabled-p 'ths-ai-macro-enabled)
-          (request-cached :macro (ths-info--macro-url) #'ths-info--macro-parse
-                          (lambda (macro) (record :macro macro))
-                          ths-info--sina-headers 'gb18030 (list :macro nil))
-          (request-cached :turnover (ths-info--turnover-url) #'ths-info--turnover-parse
-                          (lambda (turnover) (record :turnover turnover))
-                          ths-info--sina-headers 'gb18030 (list :turnover nil))))
+                          nil 'gb18030)))
+      ;; 宏观面板与两市成交额不依赖 STOCK：它们是全市场读数，盘面分析（STOCK 为
+      ;; nil）同样需要。放在 `symbol'/`code' 判空之外，否则盘面事实里的 `:macro'
+      ;; 与 `:turnover' 恒空，盘面报告的宏观小节在生产路径上永远不渲染。这两项
+      ;; 由 macro 开关控制；开关关闭时连请求都不发。
+      (when (ths-info--enabled-p 'ths-ai-macro-enabled)
+        (request-cached :macro (ths-info--macro-url) #'ths-info--macro-parse
+                        (lambda (macro) (record :macro macro))
+                        ths-info--sina-headers 'gb18030 (list :macro nil))
+        (request-cached :turnover (ths-info--turnover-url) #'ths-info--turnover-parse
+                        (lambda (turnover) (record :turnover turnover))
+                        ths-info--sina-headers 'gb18030 (list :turnover nil)))
       ;; Every factor may have been served from the cache, in which case no
       ;; request is outstanding and the callback still has to run once.
       (when (<= pending 0) (finish))

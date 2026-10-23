@@ -638,5 +638,36 @@ OFF is a list of symbols such as `(ths-ai-macro-enabled)'."
         (should-not (ths-info-test--await (lambda () (> calls 0)) 0.5))
         (should (= 0 calls))))))
 
+(ert-deftest ths-info-collect-nil-stock-fetches-macro-only ()
+  "无个股（盘面分析）时仍抓宏观与两市成交额，其余四类跳过且不记 ERRORS。
+宏观面板与成交额是全市场读数，与标的无关：`ths-ai--analyze-one' 对
+`key='market' 传的正是 nil stock，若也放在 symbol 判空之内，盘面事实的
+`:macro'/`:turnover' 恒空，B5 的盘面宏观小节在生产路径上永远不渲染。
+跳过其余四类是因为没有标的可查，不是失败，因此 ERRORS 必须为空。"
+  (ths-info-test--with-http nil
+    (ths-info-test--with-switches nil
+      (let ((calls 0)
+            (info nil)
+            (errors 'unset))
+        (ths-info-collect nil
+                          (lambda (i e)
+                            (setq calls (1+ calls) info i errors e)))
+        (should (ths-info-test--await (lambda () (> calls 0))))
+        (should (= 1 calls))
+        ;; 恰好两个请求：宏观面板（macro）＋ 两市成交额（URL 含 sh000001，归 index 类）。
+        (should (= 2 (ths-info-test--total-calls)))
+        (should (= 1 (ths-info-test--call-count 'macro)))
+        (should (= 1 (ths-info-test--call-count 'index)))
+        (dolist (category '(news ann-list ann-body financials
+                            industry-name industry-change other))
+          (should (= 0 (ths-info-test--call-count category))))
+        ;; INFO 只有宏观与成交额。
+        (should (numberp (plist-get (plist-get info :macro) :fx-usdcny)))
+        (should (< (abs (- 1.0e12 (plist-get info :turnover))) 1.0))
+        (dolist (key '(:news :announcements :financials :industry))
+          (should-not (plist-get info key)))
+        ;; 没有标的 ≠ 抓取失败：ERRORS 保持为空。
+        (should-not errors)))))
+
 (provide 'ths-info-tests)
 ;;; ths-info-tests.el ends here
